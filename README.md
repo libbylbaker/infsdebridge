@@ -1,2 +1,2 @@
-# sde-bridges
+# sdebridges
 Compute bridged sdes 
