@@ -68,38 +68,53 @@ def get_iterable_dataset(generator: callable, dtype: tf.DType, shape: tuple):
     return iterable_dataset
 
 ### Plotting helpers
-def plot_est_vector_field(X_est_state: TrainState,
-                          xs: jnp.ndarray,
-                          ts: jnp.ndarray,
-                          suptitle: str,
-                          **kwargs):
-    xm, ym = jnp.meshgrid(xs, xs)
-    x = jnp.stack([xm.flatten(), ym.flatten()], axis=-1)
-
-    fig, ax = plt.subplots(1, len(ts), figsize=(4*len(ts), 4))
-    for i, t in enumerate(ts):
-        vector_field = eval_score(X_est_state, x, t)
-        u = vector_field[:, 0].reshape(xm.shape)
-        v = vector_field[:, 1].reshape(xm.shape)
-        ax[i].quiver(xm, ym, u, v, scale=kwargs['scale'])
-        ax[i].set_title(f"t = {t:.1f}")
-    fig.suptitle(suptitle)
-    plt.show()
-
-def plot_vector_field(X: callable, 
-                      xs: jnp.ndarray,
-                      ts: jnp.ndarray,
-                      suptitle: str,
-                      **kwargs):
+def plot_2d_vector_field(X: callable, 
+                         X_ref: callable,
+                         xs: jnp.ndarray,
+                         ts: jnp.ndarray,
+                         suptitle: str,
+                         scale: float=None,
+                         **kwargs):
     xm, ym = jnp.meshgrid(xs, xs)
     x = jnp.stack([xm.flatten(), ym.flatten()], axis=-1)
     fig, ax = plt.subplots(1, len(ts), figsize=(4*len(ts), 4))
-    X = partial(X, **kwargs)
+    X_ref = partial(X_ref, **kwargs) if X_ref is not None else None
     for i, t in enumerate(ts):
-        vector_field = jax.vmap(X, in_axes=(0, None))(x, t)
-        u = vector_field[:, 0].reshape(xm.shape)
-        v = vector_field[:, 1].reshape(xm.shape)
-        ax[i].quiver(xm, ym, u, v, scale=kwargs['scale'])
+        vector_field = X(x, t) if X is not None else None
+        vector_field_ref = X_ref(x, t) if X_ref is not None else None
+        if vector_field is not None:
+            u = vector_field[:, 0].reshape(xm.shape)
+            v = vector_field[:, 1].reshape(xm.shape)
+            ax[i].quiver(xm, ym, u, v, color='b', scale=scale)
+
+        if vector_field_ref is not None:
+            u_ref = vector_field_ref[:, 0].reshape(xm.shape)
+            v_ref = vector_field_ref[:, 1].reshape(xm.shape)
+            ax[i].quiver(xm, ym, u_ref, v_ref, color='r', scale=scale)
+        
         ax[i].set_title(f"t = {t:.1f}")
     fig.suptitle(suptitle)
-    plt.show()
+    plt.show() 
+
+def plot_2d_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
+    colormap = plt.cm.get_cmap('spring')
+    num_trajectories = trajectories.shape[0]
+    colors = [colormap(i) for i in jnp.linspace(0, 1, num_trajectories)]
+    for i in range(num_trajectories):
+        plt.plot(trajectories[i, :, 0], trajectories[i, :, 1], color=colors[i], zorder=1, alpha=0.5, **kwargs)
+        plt.scatter(trajectories[i, 1, 0], trajectories[i, 1, 1], color='b', marker='o', edgecolors='k', zorder=2)
+        plt.scatter(trajectories[i, -2, 0], trajectories[i, -2, 1], color='c', marker='D', edgecolors='k', zorder=2)
+    plt.title(title)
+
+def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
+    colormap = plt.cm.get_cmap('spring')
+    assert len(trajectories.shape) == 3
+    num_trajectories = trajectories.shape[0]
+    dim = trajectories.shape[2]
+    colors = [colormap(i) for i in jnp.linspace(0, 1, num_trajectories)]
+    for i in range(num_trajectories):
+        for j in range(dim//2):
+            plt.plot(trajectories[i, :, 2*j], trajectories[i, :, 2*j+1], color=colors[i], zorder=1, alpha=0.2, **kwargs)
+            plt.scatter(trajectories[i, 0, 2*j], trajectories[i, 0, 2*j+1], color='b', marker='o', edgecolors='k', zorder=2)
+            plt.scatter(trajectories[i, -1, 2*j], trajectories[i, -1, 2*j+1], color=colors[i], marker='D', edgecolors='k', zorder=2)
+    plt.title(title)

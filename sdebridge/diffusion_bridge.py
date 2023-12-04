@@ -94,6 +94,7 @@ class DiffusionBridge:
         trajectories = trajectories.at[:, 0, :].set(X)                          # end point constraint: Z*(tN) = X(0)
         return trajectories
     
+    # ??? MAYBE NOT NEEDED
     def simulate_forward_bridge(self, 
                                 score_transition_state: TrainState,
                                 score_marginal_state: TrainState,
