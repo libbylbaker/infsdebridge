@@ -61,9 +61,16 @@ def eval_score(state: TrainState, x: jnp.ndarray, t: float) -> jnp.ndarray:
     t = jnp.tile(t, reps=(x.shape[0], 1))                           # (B, 1)
     return state.apply_fn({'params': state.params, 'batch_stats': state.batch_stats}, x, t, train=False)
 
-def get_iterable_dataset(generator: callable, dtype: tf.DType, shape: tuple):
-    dataset = tf.data.Dataset.from_generator(generator,
-                                             output_signature=(tf.TensorSpec(shape=shape, dtype=dtype)))
+def get_iterable_dataset(generator: callable, dtype: any, shape: any):
+    if type(dtype) == tf.DType and type(shape) == list:
+        dataset = tf.data.Dataset.from_generator(generator,
+                                                output_signature=(tf.TensorSpec(shape=shape, dtype=dtype)))
+    elif type(dtype) == tuple and type(shape) == list:
+        assert len(dtype) == len(shape)
+        signatures = tuple([tf.TensorSpec(shape=shape[i], dtype=dtype[i]) for i in range(len(dtype))])
+        dataset = tf.data.Dataset.from_generator(generator, output_signature=signatures)
+    else:
+        raise ValueError("Invalid dtype or shape")
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
 
@@ -112,9 +119,31 @@ def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
     num_trajectories = trajectories.shape[0]
     dim = trajectories.shape[2]
     colors = [colormap(i) for i in jnp.linspace(0, 1, num_trajectories)]
+    plt.figure(figsize=(8, 8))
     for i in range(num_trajectories):
         for j in range(dim//2):
             plt.plot(trajectories[i, :, 2*j], trajectories[i, :, 2*j+1], color=colors[i], zorder=1, alpha=0.2, **kwargs)
             plt.scatter(trajectories[i, 0, 2*j], trajectories[i, 0, 2*j+1], color='b', marker='o', edgecolors='k', zorder=2)
             plt.scatter(trajectories[i, -1, 2*j], trajectories[i, -1, 2*j+1], color=colors[i], marker='D', edgecolors='k', zorder=2)
+    plt.xlim(-1.5, 1.5)
+    plt.ylim(-1.5, 1.5)
     plt.title(title)
+
+### Data helpers
+def sample_circle(num_points: int, scale: float, shifts: jnp.ndarray) -> jnp.ndarray:
+    theta = jnp.linspace(0, 2 * jnp.pi, num_points, endpoint=False)
+    x = jnp.cos(theta)
+    y = jnp.sin(theta)
+    return (scale * jnp.stack([x, y], axis=1) + shifts).flatten()
+
+def sample_square(num_points: int, scale: float, shifts: jnp.ndarray) -> jnp.ndarray:
+    num_points_per_side = num_points // 4
+    x1 = jnp.linspace(-1, 1, num_points_per_side, endpoint=False)
+    x2 = jnp.linspace(1, -1, num_points_per_side, endpoint=False)
+    y1 = jnp.linspace(-1, 1, num_points_per_side, endpoint=False)
+    y2 = jnp.linspace(1, -1, num_points_per_side, endpoint=False)
+    xy1 = jnp.stack([x1, jnp.ones_like(x1)], axis=1)
+    xy2 = jnp.stack([jnp.ones_like(y1), y2], axis=1)
+    xy3 = jnp.stack([x2, -jnp.ones_like(x2)], axis=1)
+    xy4 = jnp.stack([-jnp.ones_like(y1), y1], axis=1)
+    return (scale * jnp.concatenate([xy1, xy2, xy3, xy4], axis=0) + shifts).flatten()
