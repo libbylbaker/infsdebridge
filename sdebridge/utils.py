@@ -123,10 +123,10 @@ def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
     for i in range(num_trajectories):
         for j in range(dim//2):
             plt.plot(trajectories[i, :, 2*j], trajectories[i, :, 2*j+1], color=colors[i], zorder=1, alpha=0.2, **kwargs)
-            plt.scatter(trajectories[i, 0, 2*j], trajectories[i, 0, 2*j+1], color='b', marker='o', edgecolors='k', zorder=2)
-            plt.scatter(trajectories[i, -1, 2*j], trajectories[i, -1, 2*j+1], color=colors[i], marker='D', edgecolors='k', zorder=2)
-    plt.xlim(-1.5, 1.5)
-    plt.ylim(-1.5, 1.5)
+            plt.scatter(trajectories[i, 1, 2*j], trajectories[i, 1, 2*j+1], color='b', marker='o', edgecolors='k', zorder=2)
+            plt.scatter(trajectories[i, -2, 2*j], trajectories[i, -2, 2*j+1], color=colors[i], marker='D', edgecolors='k', zorder=2)
+    plt.xlim(-2.0, 2.0)
+    plt.ylim(-2.0, 2.0)
     plt.title(title)
 
 ### Data helpers
