@@ -204,7 +204,7 @@ class DiffusionBridge:
             inverted_time = self.T - time
             if using_true_score:
                 score_p = self.true_score_transition(
-                    value=val, start_val=terminal, time=inverted_time
+                    val=val, start_val=terminal, time=inverted_time
                 )
             else:
                 score_p = utils.eval_score(
@@ -260,7 +260,7 @@ class DiffusionBridge:
             self.rng, _ = jax.random.split(self.rng)
             if using_true_score:
                 score_p = self.true_score_transition(
-                    value=Z, start_val=X, time=reverse_t_now
+                    val=Z, start_val=X, time=reverse_t_now
                 )
             else:
                 score_p = utils.eval_score(state=score_p_state, x=Z, t=reverse_t_now)
@@ -295,12 +295,60 @@ class DiffusionBridge:
                 )  # (dW(tN), dW(tN-1), ..., dW(t1))
         return {"trajectories": trajectories, "scaled_brownians": scaled_brownians}
 
-    def simulate_forward_bridge(
+    def simulate_forward_bridge2(
         self,
-        score_p_state: utils.TrainState,
-        score_p_star_state: utils.TrainState,
         initial_condition: jnp.ndarray,
         terminal_condition: jnp.ndarray,
+        true_score: callable = None,
+        score_p_state: utils.TrainState = None,
+        score_p_star_state: utils.TrainState = None,
+    ) -> jnp.ndarray:
+        """Simulate the forward bridge process (X*(t)) which is the "backward of backward":
+            dX*(t) = {-f(t, X*(t)) + Sigma(t, X*(t)) [s*(t, X*(t)) - s(t, X*(t))]} dt + g(t, X*(t)) dW(t)
+
+        Args:
+            score_p_state (utils.TrainState): s_{theta}(t, x)
+            score_p_star_state (utils.TrainState): s*_{theta}(t, x)
+            initial_condition (jnp.ndarray): X*(0)
+            terminal_condition (jnp.ndarray): X*(T)
+
+        Returns:
+            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward bridge trajectories,
+                   "scaled_brownians": jnp.ndarray, (B, N, d) scaled stochastic updates for computing the gradients}
+        """
+
+        def drift(val, time):
+            # todo: what should the behaviour be when t=0? I think it should return 1 for val=initial_cond and 0 otherwise.
+            if time == 0:
+                time = self.ts[1] * 0.1
+            if true_score is not None:
+                score_h = true_score(val=val, time=time)
+            else:
+                score_p = utils.eval_score(state=score_p_state, x=val, t=time)
+                score_p_star = utils.eval_score(state=score_p_star_state, x=val, t=time)
+                score_h = score_p_star - score_p
+            orig_drift = self.f(val=val, time=time)
+            bridge_term = utils.sb_multi(self.covariance(x=val, t=time), score_h)
+            return orig_drift + bridge_term
+
+        def diffusion(val, time):
+            return self.g(val=val, time=time)
+
+        processes = self.euler_maruyama_scaled_bridge(
+            initial_condition=initial_condition,
+            terminal_condition=terminal_condition,
+            drift=drift,
+            diffusion=diffusion,
+        )
+        return {"trajectories": processes["trajectories"], "scaled_brownians": None}
+
+    def simulate_forward_bridge(
+        self,
+        initial_condition: jnp.ndarray,
+        terminal_condition: jnp.ndarray,
+        score_p_state: utils.TrainState = None,
+        score_p_star_state: utils.TrainState = None,
+        true_score: callable = None,
     ) -> jnp.ndarray:
         """Simulate the forward bridge process (X*(t)) which is the "backward of backward":
             dX*(t) = {-f(t, X*(t)) + Sigma(t, X*(t)) [s*(t, X*(t)) - s(t, X*(t))]} dt + g(t, X*(t)) dW(t)
@@ -330,9 +378,12 @@ class DiffusionBridge:
             t_next = self.ts[t_idx + 1]  # (t1, t2, ..., tN-1)
             dt = t_next - t_now  # (t1-t0, t2-t1, ..., tN-1-tN-2)
             self.rng, _ = jax.random.split(self.rng)
-            score_p = utils.eval_score(state=score_p_state, x=X, t=t_now)
-            score_p_star = utils.eval_score(state=score_p_star_state, x=X, t=t_now)
-            score_h = score_p_star - score_p
+            if true_score is not None:
+                score_h = true_score(val=X, time=t_now)
+            else:
+                score_p = utils.eval_score(state=score_p_state, x=X, t=t_now)
+                score_p_star = utils.eval_score(state=score_p_star_state, x=X, t=t_now)
+                score_h = score_p_star - score_p
 
             drift = (
                 self.f(X, t_now) + utils.sb_multi(self.covariance(X, t_now), score_h)
@@ -473,10 +524,10 @@ class DiffusionBridge:
                     )
                 elif process_type == "forward_bridge":
                     histories = self.simulate_forward_bridge(
-                        score_p_state,
-                        score_p_star_state,
                         initial_conditions,
                         terminal_conditions,
+                        score_p_state,
+                        score_p_star_state,
                     )
                 yield (histories["trajectories"], histories["scaled_brownians"])
 
