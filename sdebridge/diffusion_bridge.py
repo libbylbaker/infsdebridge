@@ -349,32 +349,6 @@ class DiffusionBridge:
         )  # end point constraint: X*(tN) = Z
         return {"trajectories": trajectories, "scaled_brownians": None}
 
-    # def get_p_gradient(self,
-    #                    forward_trajectories: jnp.ndarray,
-    #                    brownian_increments: jnp.ndarray) -> jnp.ndarray:
-    #     """ Compute g(t_{m-1}, X_{m-1}, t_m, X_m) for eq. (8)
-
-    #     Args:
-    #         foward_trajectories (jnp.ndarray): (B, N+1, d) forward non-bridge trajectories
-    #         brownian_increments (jnp.ndarray): (B, N, d) brownian increments for computing the gradients. (* not used in this method)
-
-    #     Returns:
-    #         jnp.ndarray: (B, N, d) g(t_{m-1}, X_{m-1}, t_m, X_m)
-    #     """
-    #     assert forward_trajectories.shape[-1] == self.d
-    #     B = forward_trajectories.shape[0]      # batch size
-    #     gradients = jnp.zeros(shape=(B, self.N, self.d))
-    #     for t_idx in range(self.N-1):                                    # (0, 1, ..., N-2)
-    #         X_m_minus_1 = forward_trajectories[:, t_idx, :]              # previous step for forward process
-    #         X_m = forward_trajectories[:, t_idx+1, :]                    # current step for forward process
-    #         t_m_minus_1 = self.ts[t_idx]
-    #         t_m = self.ts[t_idx+1]
-    #         dt = t_m - t_m_minus_1
-    #         gradient = -(X_m - X_m_minus_1 - dt * self.f(X_m_minus_1, t_m_minus_1)) / dt
-    #         gradient = utils.sb_multi(self.inv_Sigma(X_m_minus_1, t_m_minus_1), gradient)
-    #         gradients = gradients.at[:, t_idx, :].set(gradient)
-    #     return gradients
-
     def get_p_gradient(
         self,
         forward_trajectories: jnp.ndarray,
@@ -421,33 +395,6 @@ class DiffusionBridge:
             gradient = scaled_brownian - additional_constraint
             gradients = gradients.at[:, t_idx, :].set(gradient)
         return gradients
-
-        # def get_p_star_gradient(self,
-
-    #                         backward_trajectories: jnp.ndarray,
-    #                         brownian_increments: jnp.ndarray) -> jnp.ndarray:
-    #     """ Compute g^(t_{m-1}, Z*_{m-1}, t_m, Z*_m) for eq. (18)
-
-    #     Args:
-    #         backward_trajectories (jnp.ndarray): (B, N+1, d) backward bridge trajectories
-    #         brownian_increments (jnp.ndarray): (B, N, d) brownian increments for computing the gradients. (not used in this method)
-
-    #     Returns:
-    #         jnp.ndarray: (B, N, d) g^(t_{m-1}, Z*_{m-1}, t_m, Z*_m)
-    #     """
-    #     assert backward_trajectories.shape[-1] == self.d
-    #     B = backward_trajectories.shape[0]      # batch size
-    #     gradients = jnp.zeros(shape=(B, self.N, self.d))
-    #     for reverse_t_idx in range(self.N, 0, -1):                              # (N, N-1, ..., 1)
-    #         Z_m_minus_1 = backward_trajectories[:, reverse_t_idx, :]            # previous step for backward prcess, i.e. next step for forward process
-    #         Z_m = backward_trajectories[:, reverse_t_idx-1, :]                  # current step for backward process, also for the forward process
-    #         reverse_t_m_minus_1 = self.ts[reverse_t_idx]
-    #         reverse_t_m = self.ts[reverse_t_idx-1]
-    #         dt = reverse_t_m_minus_1 - reverse_t_m
-    #         gradient = -(Z_m - Z_m_minus_1 - dt * self.f(Z_m_minus_1, reverse_t_m_minus_1)) / dt
-    #         gradient = utils.sb_multi(self.inv_Sigma(Z_m_minus_1, reverse_t_m_minus_1), gradient)
-    #         gradients = gradients.at[:, reverse_t_idx-1, :].set(gradient)
-    #     return gradients
 
     def get_p_star_gradient(
         self,
