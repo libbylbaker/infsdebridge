@@ -193,8 +193,9 @@ class DiffusionBridge:
 
         Returns:
             dict: {"trajectories": jnp.ndarray, (B, N+1, d) backward bridge trajectories,
-                   "brownian_increments": jnp.ndarray, (B, N, d) brownian increments for computing the gradients}
+                   "scaled_brownians": jnp.ndarray, (B, N, d) brownian increments for computing the gradients}
         !!! N.B. trajectories = [Z*(0), ..., Z*(T)], which is opposite to original simulate_backward_bridge !!!
+        !!! N.B. scaled_brownians is also therefore exactly the opposite to what's given in simulate backward bridge!!!
         """
 
         terminal = terminal_condition.copy()
