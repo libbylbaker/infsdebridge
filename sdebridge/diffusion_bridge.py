@@ -63,14 +63,13 @@ class DiffusionBridge:
         trajectories = jnp.zeros(shape=(B, self.N + 1, self.d))  # (t0, t1, ..., tN)
         scaled_brownians = jnp.zeros(shape=(B, self.N, self.d))  # (t0, t1, ..., tN-1)
         trajectories = trajectories.at[:, 0, :].set(X)  # (X(t0))
-        rng = self.rng.copy()
         for t_idx in range(self.N):  # (0, 1, ... , N-1)
             t_now = self.ts[t_idx]  # (t0, t1, ..., tN-1)
             t_next = self.ts[t_idx + 1]  # (t1, t2, ..., tN)
             dt = t_next - t_now  # (t1-t0, t2-t1, ..., tN-tN-1)
-            rng, _ = jax.random.split(rng)
+            self.rng, _ = jax.random.split(self.rng)
             drift_step = dt * drift(val=X, time=t_now)
-            brownian = jnp.sqrt(dt) * jax.random.normal(rng, shape=(B, self.d))
+            brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
             diffusion_step = utils.sb_multi(diffusion(val=X, time=t_now), brownian)
             scaled_brownian = -utils.sb_multi(
                 self.inv_covariance(X, t_now) / dt, diffusion_step
@@ -157,7 +156,7 @@ class DiffusionBridge:
         Returns:
             dict: {"trajectories": jnp.ndarray, (B, N+1, d) backward bridge trajectories,
                    "scaled_brownians": jnp.ndarray, (B, N, d) brownian increments for computing the gradients}
-        !!! N.B. trajectories = [Z*(0), ..., Z*(T)], which is opposite to original simulate_backward_bridge !!!
+        !!! N.B. trajectories = [Z*(T), ..., Z*(0)], which is opposite to expected simulate_backward_bridge !!!
         !!! N.B. scaled_brownians is also therefore exactly the opposite to what's given in simulate backward bridge!!!
         """
 
@@ -180,12 +179,17 @@ class DiffusionBridge:
             reverse_time = self.T - time
             return self.g(val, reverse_time)
 
-        return self.euler_maruyama_scaled_bridge(
-            initial_condition=initial_condition,
-            terminal_condition=terminal_condition,
+        # swapping initial and terminal conditions then mirroring at the end is equivalent to previous method
+        process = self.euler_maruyama_scaled_bridge(
+            initial_condition=terminal_condition,
+            terminal_condition=initial_condition,
             drift=drift,
             diffusion=diffusion,
         )
+        return {
+            "trajectories": process["trajectories"][:, ::-1, :],
+            "scaled_brownians": process["scaled_brownians"][:, ::-1, :],
+        }
 
     def simulate_forward_bridge(
         self,
@@ -256,12 +260,10 @@ class DiffusionBridge:
         X0 = forward_trajectories[:, 0, :]  # initial condition
         gradients = jnp.zeros(shape=(B, self.N, self.d))
         for t_idx in range(self.N):  # (0, 1, ..., N-2)
-            X_m_minus_1 = forward_trajectories[
-                :, t_idx, :
-            ]  # previous step for forward process
-            X_m = forward_trajectories[
-                :, t_idx + 1, :
-            ]  # current step for forward process
+            # previous step for forward process
+            X_m_minus_1 = forward_trajectories[:, t_idx, :]
+            # current step for forward process
+            X_m = forward_trajectories[:, t_idx + 1, :]
             if t_idx == self.N - 1:
                 t_m = (
                     0.75 * self.ts[t_idx + 1] + 0.25 * self.ts[t_idx]
@@ -604,7 +606,7 @@ class DiffusionBridge:
         X = initial_condition.copy()
         Z = terminal_condition.copy()
         trajectories = jnp.zeros(shape=(B, self.N + 1, self.d))  # (t0, t1, ..., tN)
-        trajectories = trajectories.at[:, self.N, :].set(Z)  # (Z*(t0) = X(tN))
+        trajectories = trajectories.at[:, self.N, :].set(Z)  # (Z*(tN) = X(t0))
         scaled_brownians = jnp.zeros(shape=(B, self.N, self.d))  # (t0, t1, ..., tN-1)
         for reverse_t_idx in range(self.N, 0, -1):  # (N, N-1, ..., 1)
             reverse_t_now = self.ts[reverse_t_idx]  # (tN, tN-1..., t1)
