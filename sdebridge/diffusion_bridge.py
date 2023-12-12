@@ -2,10 +2,11 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import tensorflow as tf
+import utils
 from tqdm.notebook import tqdm
 
 from .networks import ScoreNet
-from .utils import *
 
 
 class DiffusionBridge:
@@ -65,8 +66,10 @@ class DiffusionBridge:
             self.rng, _ = jax.random.split(self.rng)
             drift = dt * self.f(X, t_now)
             brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
-            diffusion = sb_multi(self.g(X, t_now), brownian)
-            scaled_brownian = -sb_multi(self.inv_covariance(X, t_now) / dt, diffusion)
+            diffusion = utils.sb_multi(self.g(X, t_now), brownian)
+            scaled_brownian = -utils.sb_multi(
+                self.inv_covariance(X, t_now) / dt, diffusion
+            )
             X = X + drift + diffusion  # Euler-Maruyama
             trajectories = trajectories.at[:, t_idx + 1, :].set(
                 X
@@ -78,7 +81,7 @@ class DiffusionBridge:
 
     def simulate_backward_bridge(
         self,
-        score_p_state: TrainState,
+        score_p_state: utils.TrainState,
         initial_condition: jnp.ndarray,
         terminal_condition: jnp.ndarray,
     ) -> dict:
@@ -86,7 +89,7 @@ class DiffusionBridge:
             dZ*(t) = {-f(T-t, Z*(t)) + Sigma(T-t, Z*(t)) s(T-t, Z*(t)) + div Sigma(T-t, Z*(t))} dt + g(T-t, Z*(t)) dW(t)
 
         Args:
-            score_p_state (TrainState): s_{theta}(t, x)
+            score_p_state (utils.TrainState): s_{theta}(t, x)
             initial_condition (jnp.ndarray): Z*(0) = X(T-t)
             terminal_condition (jnp.ndarray): Z*(T) = X(0)
 
@@ -106,18 +109,18 @@ class DiffusionBridge:
             reverse_t_next = self.ts[reverse_t_idx - 1]  # (tN-1, tN-2, ..., t0)
             dt = reverse_t_now - reverse_t_next  # (tN-tN-1, tN-1-tN-2, ..., t1-t0)
             self.rng, _ = jax.random.split(self.rng)
-            score_p = eval_score(state=score_p_state, x=Z, t=reverse_t_now)
+            score_p = utils.eval_score(state=score_p_state, x=Z, t=reverse_t_now)
             drift = (
                 -self.f(Z, reverse_t_now)
-                + sb_multi(self.covariance(Z, reverse_t_now), score_p)
+                + utils.sb_multi(self.covariance(Z, reverse_t_now), score_p)
                 + self.divergence_covariance(Z, reverse_t_now)
             ) * dt
 
             if reverse_t_idx > 1:
                 brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
-                diffusion = sb_multi(self.g(Z, reverse_t_now), brownian)
+                diffusion = utils.sb_multi(self.g(Z, reverse_t_now), brownian)
                 Z = Z + drift + diffusion  # Euler-Maruyama
-                scaled_brownian = -sb_multi(
+                scaled_brownian = -utils.sb_multi(
                     self.inv_covariance(Z, reverse_t_now) / dt, diffusion
                 )
                 scaled_brownians = scaled_brownians.at[:, reverse_t_idx - 1, :].set(
@@ -130,7 +133,7 @@ class DiffusionBridge:
                 trajectories = trajectories.at[:, 0, :].set(
                     X
                 )  # end point constraint: Z*(tN) = X(0)
-                scaled_brownian = -sb_multi(
+                scaled_brownian = -utils.sb_multi(
                     self.inv_covariance(Z, reverse_t_now) / dt, (X - Z - drift)
                 )
                 scaled_brownians = scaled_brownians.at[:, 0, :].set(
@@ -140,8 +143,8 @@ class DiffusionBridge:
 
     def simulate_forward_bridge(
         self,
-        score_p_state: TrainState,
-        score_p_star_state: TrainState,
+        score_p_state: utils.TrainState,
+        score_p_star_state: utils.TrainState,
         initial_condition: jnp.ndarray,
         terminal_condition: jnp.ndarray,
     ) -> jnp.ndarray:
@@ -149,8 +152,8 @@ class DiffusionBridge:
             dX*(t) = {-f(t, X*(t)) + Sigma(t, X*(t)) [s*(t, X*(t)) - s(t, X*(t))]} dt + g(t, X*(t)) dW(t)
 
         Args:
-            score_p_state (TrainState): s_{theta}(t, x)
-            score_p_star_state (TrainState): s*_{theta}(t, x)
+            score_p_state (utils.TrainState): s_{theta}(t, x)
+            score_p_star_state (utils.TrainState): s*_{theta}(t, x)
             initial_condition (jnp.ndarray): X*(0)
             terminal_condition (jnp.ndarray): X*(T)
 
@@ -173,15 +176,15 @@ class DiffusionBridge:
             t_next = self.ts[t_idx + 1]  # (t1, t2, ..., tN-1)
             dt = t_next - t_now  # (t1-t0, t2-t1, ..., tN-1-tN-2)
             self.rng, _ = jax.random.split(self.rng)
-            score_p = eval_score(state=score_p_state, x=X, t=t_now)
-            score_p_star = eval_score(state=score_p_star_state, x=X, t=t_now)
+            score_p = utils.eval_score(state=score_p_state, x=X, t=t_now)
+            score_p_star = utils.eval_score(state=score_p_star_state, x=X, t=t_now)
             score_h = score_p_star - score_p
 
             drift = (
-                self.f(X, t_now) + sb_multi(self.covariance(X, t_now), score_h)
+                self.f(X, t_now) + utils.sb_multi(self.covariance(X, t_now), score_h)
             ) * dt
             brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
-            diffusion = sb_multi(self.g(X, t_now), brownian)
+            diffusion = utils.sb_multi(self.g(X, t_now), brownian)
             X = X + drift + diffusion
             trajectories = trajectories.at[:, t_idx + 1, :].set(
                 X
@@ -214,7 +217,7 @@ class DiffusionBridge:
     #         t_m = self.ts[t_idx+1]
     #         dt = t_m - t_m_minus_1
     #         gradient = -(X_m - X_m_minus_1 - dt * self.f(X_m_minus_1, t_m_minus_1)) / dt
-    #         gradient = sb_multi(self.inv_Sigma(X_m_minus_1, t_m_minus_1), gradient)
+    #         gradient = utils.sb_multi(self.inv_Sigma(X_m_minus_1, t_m_minus_1), gradient)
     #         gradients = gradients.at[:, t_idx, :].set(gradient)
     #     return gradients
 
@@ -256,7 +259,9 @@ class DiffusionBridge:
             scaled_brownian = scaled_brownians[:, t_idx, :]
             additional_constraint = (
                 epsilon
-                * sb_multi(self.inv_covariance(X_m_minus_1, t_m_minus_1), (X0 - X_m))
+                * utils.sb_multi(
+                    self.inv_covariance(X_m_minus_1, t_m_minus_1), (X0 - X_m)
+                )
                 / (self.T - t_m)
             )
             gradient = scaled_brownian - additional_constraint
@@ -286,7 +291,7 @@ class DiffusionBridge:
     #         reverse_t_m = self.ts[reverse_t_idx-1]
     #         dt = reverse_t_m_minus_1 - reverse_t_m
     #         gradient = -(Z_m - Z_m_minus_1 - dt * self.f(Z_m_minus_1, reverse_t_m_minus_1)) / dt
-    #         gradient = sb_multi(self.inv_Sigma(Z_m_minus_1, reverse_t_m_minus_1), gradient)
+    #         gradient = utils.sb_multi(self.inv_Sigma(Z_m_minus_1, reverse_t_m_minus_1), gradient)
     #         gradients = gradients.at[:, reverse_t_idx-1, :].set(gradient)
     #     return gradients
 
@@ -328,7 +333,7 @@ class DiffusionBridge:
             scaled_brownian = scaled_brownians[:, reverse_t_idx - 1, :]
             additional_constraint = (
                 epsilon
-                * sb_multi(
+                * utils.sb_multi(
                     self.inv_covariance(Z_m_minus_1, reverse_t_m_minus_1), (XT - Z_m)
                 )
                 / reverse_t_m
@@ -343,8 +348,8 @@ class DiffusionBridge:
         process_type: str,
         initial_condition: jnp.ndarray,
         terminal_condition: jnp.ndarray,
-        score_p_state: TrainState,
-        score_p_star_state: TrainState,
+        score_p_state: utils.TrainState,
+        score_p_star_state: utils.TrainState,
     ) -> callable:
         assert process_type in ["forward", "backward_bridge", "forward_bridge"]
         assert initial_condition.shape[-1] == self.d
@@ -387,7 +392,7 @@ class DiffusionBridge:
             score_p_state=None,
             score_p_star_state=None,
         )
-        dataset = get_iterable_dataset(
+        dataset = utils.get_iterable_dataset(
             generator=data_generator,
             dtype=(tf.float32, tf.float32),
             shape=[
@@ -397,10 +402,10 @@ class DiffusionBridge:
         )
 
         @jax.jit
-        def train_step(state: TrainState, batch: tuple):
+        def train_step(state: utils.TrainState, batch: tuple):
             trajectories, scaled_brownians = batch
-            ts = flatten_batch(
-                unsqueeze(
+            ts = utils.flatten_batch(
+                utils.unsqueeze(
                     jnp.tile(self.ts[1:], reps=(training_params["batch_size"], 1)),
                     axis=-1,
                 )
@@ -408,8 +413,8 @@ class DiffusionBridge:
             score_p_gradients = self.get_p_gradient(
                 trajectories, scaled_brownians
             )  # (B, N, d)
-            score_p_gradients = flatten_batch(score_p_gradients)  # (B*N, d)
-            trajectories = flatten_batch(trajectories[:, 1:, :])  # (B*N, d)
+            score_p_gradients = utils.flatten_batch(score_p_gradients)  # (B*N, d)
+            trajectories = utils.flatten_batch(trajectories[:, 1:, :])  # (B*N, d)
 
             def loss_fn(params):
                 score_p_est, updates = state.apply_fn(
@@ -432,7 +437,7 @@ class DiffusionBridge:
             state = state.replace(metrics=metrics)
             return state
 
-        state = create_train_state(
+        state = utils.create_train_state(
             score_p_net,
             self.rng,
             training_params["learning_rate"],
@@ -461,7 +466,7 @@ class DiffusionBridge:
         self,
         initial_condition: jnp.ndarray,
         terminal_condition: jnp.ndarray,
-        score_p_state: TrainState,
+        score_p_state: utils.TrainState,
         setup_params: dict,
     ):
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
@@ -477,7 +482,7 @@ class DiffusionBridge:
             score_p_state=score_p_state,
             score_p_star_state=None,
         )
-        dataset = get_iterable_dataset(
+        dataset = utils.get_iterable_dataset(
             generator=data_generator,
             dtype=(tf.float32, tf.float32),
             shape=[
@@ -487,10 +492,10 @@ class DiffusionBridge:
         )
 
         @jax.jit
-        def train_step(state: TrainState, batch: tuple):
+        def train_step(state: utils.TrainState, batch: tuple):
             trajectories, scaled_brownians = batch
-            ts = flatten_batch(
-                unsqueeze(
+            ts = utils.flatten_batch(
+                utils.unsqueeze(
                     jnp.tile(self.ts[:-1], reps=(training_params["batch_size"], 1)),
                     axis=-1,
                 )
@@ -498,8 +503,10 @@ class DiffusionBridge:
             score_p_star_gradients = self.get_p_star_gradient(
                 trajectories, scaled_brownians
             )  # (B, N, d)
-            score_p_star_gradients = flatten_batch(score_p_star_gradients)  # (B*N, d)
-            trajectories = flatten_batch(trajectories[:, :-1, :])  # (B*N, d)
+            score_p_star_gradients = utils.flatten_batch(
+                score_p_star_gradients
+            )  # (B*N, d)
+            trajectories = utils.flatten_batch(trajectories[:, :-1, :])  # (B*N, d)
 
             def loss_fn(params):
                 score_p_star_est, updates = state.apply_fn(
@@ -522,7 +529,7 @@ class DiffusionBridge:
             state = state.replace(metrics=metrics)
             return state
 
-        state = create_train_state(
+        state = utils.create_train_state(
             score_p_star_net,
             self.rng,
             training_params["learning_rate"],
