@@ -42,6 +42,60 @@ class DiffusionBridge:
         jacobian_covariance = jax.jacfwd(self.covariance)
         return jnp.trace(jacobian_covariance(x, t))
 
+    def euler_maruyama_scaled(
+        self, initial_condition: jnp.ndarray, drift, diffusion
+    ) -> dict:
+        """Simulate the forward non-bridge process (X(t)):
+            dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
+
+        Args:
+            initial_condition (jnp.ndarray): X(0)
+
+        Returns:
+            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward non-bridge trajectories,
+                   "scaled_brownians": jnp.ndarray, (B, N, d) scaled stochastic updates for computing the gradients}
+        """
+        assert initial_condition.shape[-1] == self.d
+        B = initial_condition.shape[0]  # batch size
+        X = initial_condition.copy()
+        trajectories = jnp.zeros(shape=(B, self.N + 1, self.d))  # (t0, t1, ..., tN)
+        scaled_brownians = jnp.zeros(shape=(B, self.N, self.d))  # (t0, t1, ..., tN-1)
+        trajectories = trajectories.at[:, 0, :].set(X)  # (X(t0))
+        for t_idx in range(self.N):  # (0, 1, ... , N-1)
+            t_now = self.ts[t_idx]  # (t0, t1, ..., tN-1)
+            t_next = self.ts[t_idx + 1]  # (t1, t2, ..., tN)
+            dt = t_next - t_now  # (t1-t0, t2-t1, ..., tN-tN-1)
+            self.rng, _ = jax.random.split(self.rng)
+            drift = dt * self.f(X, t_now)
+            brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
+            diffusion = utils.sb_multi(self.g(X, t_now), brownian)
+            scaled_brownian = -utils.sb_multi(
+                self.inv_covariance(X, t_now) / dt, diffusion
+            )
+            X = X + drift + diffusion  # Euler-Maruyama
+            trajectories = trajectories.at[:, t_idx + 1, :].set(
+                X
+            )  # (X(t1), X(t2), ..., X(tN))
+            scaled_brownians = scaled_brownians.at[:, t_idx, :].set(
+                scaled_brownian
+            )  # (dW(t0), dW(t1), ..., dW(tN-1))
+        return {"trajectories": trajectories, "scaled_brownians": scaled_brownians}
+
+    def simulate_forward_process2(self, initial_condition: jax.Array) -> dict:
+        """Simulate the forward non-bridge process (X(t)):
+            dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
+
+        Args:
+            initial_condition (jnp.ndarray): X(0)
+
+        Returns:
+            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward non-bridge trajectories,
+                   "brownian_increments": jnp.ndarray, (B, N, d) brownian increments for computing the gradients}
+        """
+        return self.euler_maruyama_scaled(
+            initial_condition=initial_condition, drift=self.f, diffusion=self.g
+        )
+
     def simulate_forward_process(self, initial_condition: jnp.ndarray) -> dict:
         """Simulate the forward non-bridge process (X(t)):
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
@@ -84,6 +138,7 @@ class DiffusionBridge:
         score_p_state: utils.TrainState,
         initial_condition: jnp.ndarray,
         terminal_condition: jnp.ndarray,
+        using_true_score: bool,
     ) -> dict:
         """Simulate the backward bridge process (Z*(t)):
             dZ*(t) = {-f(T-t, Z*(t)) + Sigma(T-t, Z*(t)) s(T-t, Z*(t)) + div Sigma(T-t, Z*(t))} dt + g(T-t, Z*(t)) dW(t)
@@ -92,6 +147,7 @@ class DiffusionBridge:
             score_p_state (utils.TrainState): s_{theta}(t, x)
             initial_condition (jnp.ndarray): Z*(0) = X(T-t)
             terminal_condition (jnp.ndarray): Z*(T) = X(0)
+            using_true_score (bool): If True, use the predefined score transition function.
 
         Returns:
             dict: {"trajectories": jnp.ndarray, (B, N+1, d) backward bridge trajectories,
@@ -109,7 +165,12 @@ class DiffusionBridge:
             reverse_t_next = self.ts[reverse_t_idx - 1]  # (tN-1, tN-2, ..., t0)
             dt = reverse_t_now - reverse_t_next  # (tN-tN-1, tN-1-tN-2, ..., t1-t0)
             self.rng, _ = jax.random.split(self.rng)
-            score_p = utils.eval_score(state=score_p_state, x=Z, t=reverse_t_now)
+            if using_true_score:
+                score_p = self.true_score_transition(
+                    value=Z, start_val=X, time=reverse_t_now
+                )
+            else:
+                score_p = utils.eval_score(state=score_p_state, x=Z, t=reverse_t_now)
             drift = (
                 -self.f(Z, reverse_t_now)
                 + utils.sb_multi(self.covariance(Z, reverse_t_now), score_p)
