@@ -1,3 +1,4 @@
+from collections import namedtuple
 from functools import partial
 
 import jax
@@ -58,30 +59,35 @@ class DiffusionBridge:
                    "scaled_brownians": jnp.ndarray, (B, N, d) scaled stochastic updates for computing the gradients}
         """
         assert initial_condition.shape[-1] == self.d
-        B = initial_condition.shape[0]  # batch size
-        X = initial_condition.copy()
-        trajectories = jnp.zeros(shape=(B, self.N + 1, self.d))  # (t0, t1, ..., tN)
-        scaled_brownians = jnp.zeros(shape=(B, self.N, self.d))  # (t0, t1, ..., tN-1)
-        trajectories = trajectories.at[:, 0, :].set(X)  # (X(t0))
-        for t_idx in range(self.N):  # (0, 1, ... , N-1)
-            t_now = self.ts[t_idx]  # (t0, t1, ..., tN-1)
-            t_next = self.ts[t_idx + 1]  # (t1, t2, ..., tN)
-            dt = t_next - t_now  # (t1-t0, t2-t1, ..., tN-tN-1)
-            self.rng, _ = jax.random.split(self.rng)
-            drift_step = dt * drift(val=X, time=t_now)
-            brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
-            diffusion_step = utils.sb_multi(diffusion(val=X, time=t_now), brownian)
-            scaled_brownian = -utils.sb_multi(
-                self.inv_covariance(X, t_now) / dt, diffusion_step
+        State = namedtuple("State", "val scaled_brownian rng")
+        init_state = State(
+            val=initial_condition,
+            scaled_brownian=jnp.empty_like(initial_condition),
+            rng=self.rng,
+        )
+
+        def euler_maruyama_step(state: State, t_and_dt):
+            t_now, dt = t_and_dt
+            rng, _ = jax.random.split(state.rng)
+            drift_step = dt * drift(val=state.val, time=t_now)
+            brownian = jnp.sqrt(dt) * jax.random.normal(rng, shape=state.val.shape)
+            diffusion_step = utils.sb_multi(
+                diffusion(val=state.val, time=t_now), brownian
             )
-            X = X + drift_step + diffusion_step  # Euler-Maruyama
-            trajectories = trajectories.at[:, t_idx + 1, :].set(
-                X
-            )  # (X(t1), X(t2), ..., X(tN))
-            scaled_brownians = scaled_brownians.at[:, t_idx, :].set(
-                scaled_brownian
-            )  # (dW(t0), dW(t1), ..., dW(tN-1))
-        return {"trajectories": trajectories, "scaled_brownians": scaled_brownians}
+            inv_cov = self.inv_covariance(state.val, t_now)
+            scaled_brownian = -utils.sb_multi(inv_cov / dt, diffusion_step)
+            val = state.val + drift_step + diffusion_step
+            new_state = State(val=val, scaled_brownian=scaled_brownian, rng=rng)
+            return new_state, (state.val, state.scaled_brownian)
+
+        t_all, dt_all = self.ts[:-1], jnp.diff(self.ts)
+        _, (trajectories, scaled_brownians) = jax.lax.scan(
+            euler_maruyama_step, init=init_state, xs=(t_all, dt_all)
+        )
+        return {
+            "trajectories": jnp.swapaxes(trajectories, 0, 1),
+            "scaled_brownians": jnp.swapaxes(scaled_brownians[1:], 0, 1),
+        }
 
     def euler_maruyama_scaled_bridge(
         self,
@@ -543,3 +549,40 @@ class DiffusionBridge:
             state = state.replace(metrics=state.metrics.empty())
 
         return state
+
+    def simulate_forward_process_orig(self, initial_condition: jnp.ndarray) -> dict:
+        """Simulate the forward non-bridge process (X(t)):
+            dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
+
+        Args:
+            initial_condition (jnp.ndarray): X(0)
+
+        Returns:
+            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward non-bridge trajectories,
+                   "scaled_brownians": jnp.ndarray, (B, N, d) scaled stochastic updates for computing the gradients}
+        """
+        assert initial_condition.shape[-1] == self.d
+        B = initial_condition.shape[0]  # batch size
+        X = initial_condition.copy()
+        trajectories = jnp.zeros(shape=(B, self.N + 1, self.d))  # (t0, t1, ..., tN)
+        scaled_brownians = jnp.zeros(shape=(B, self.N, self.d))  # (t0, t1, ..., tN-1)
+        trajectories = trajectories.at[:, 0, :].set(X)  # (X(t0))
+        for t_idx in range(self.N):  # (0, 1, ... , N-1)
+            t_now = self.ts[t_idx]  # (t0, t1, ..., tN-1)
+            t_next = self.ts[t_idx + 1]  # (t1, t2, ..., tN)
+            dt = t_next - t_now  # (t1-t0, t2-t1, ..., tN-tN-1)
+            self.rng, _ = jax.random.split(self.rng)
+            drift = dt * self.f(X, t_now)
+            brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
+            diffusion = utils.sb_multi(self.g(X, t_now), brownian)
+            scaled_brownian = -utils.sb_multi(
+                self.inv_covariance(X, t_now) / dt, diffusion
+            )
+            X = X + drift + diffusion  # Euler-Maruyama
+            trajectories = trajectories.at[:, t_idx + 1, :].set(
+                X
+            )  # (X(t1), X(t2), ..., X(tN))
+            scaled_brownians = scaled_brownians.at[:, t_idx, :].set(
+                scaled_brownian
+            )  # (dW(t0), dW(t1), ..., dW(tN-1))
+        return {"trajectories": trajectories, "scaled_brownians": scaled_brownians}
