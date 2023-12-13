@@ -80,7 +80,7 @@ class DiffusionBridge:
             new_state = State(val=val, scaled_brownian=scaled_brownian, rng=rng)
             return new_state, (state.val, state.scaled_brownian)
 
-        t_all, dt_all = self.ts[:-1], jnp.diff(self.ts)
+        t_all, dt_all = self.ts, jnp.diff(self.ts, append=0.0)
         _, (trajectories, scaled_brownians) = jax.lax.scan(
             euler_maruyama_step, init=init_state, xs=(t_all, dt_all)
         )
@@ -265,11 +265,16 @@ class DiffusionBridge:
         B = forward_trajectories.shape[0]  # batch size
         X0 = forward_trajectories[:, 0, :]  # initial condition
         gradients = jnp.zeros(shape=(B, self.N, self.d))
-        for t_idx in range(self.N):  # (0, 1, ..., N-2)
+
+        def gradient_step():
+            X_prev = forward_trajectories[:, :-1, :]
+            X_current = forward_trajectories[:, 1:, :]
+
+        for t_idx in range(self.N):  # (0, 1, ..., N-1)
             # previous step for forward process
-            X_m_minus_1 = forward_trajectories[:, t_idx, :]
+            X_m_minus_1 = forward_trajectories[:, t_idx, :]  # 0 to N-1
             # current step for forward process
-            X_m = forward_trajectories[:, t_idx + 1, :]
+            X_m = forward_trajectories[:, t_idx + 1, :]  # 1 to N
             if t_idx == self.N - 1:
                 t_m = (
                     0.75 * self.ts[t_idx + 1] + 0.25 * self.ts[t_idx]
