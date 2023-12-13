@@ -1,7 +1,13 @@
 import jax.numpy as jnp
 from flax import linen as nn
 
-def get_timestep_embedding(timesteps: jnp.ndarray, embedding_dim: int, max_period: int=10000, scaling_factor: float=100.0) -> jnp.ndarray:
+
+def get_timestep_embedding(
+    timesteps: jnp.ndarray,
+    embedding_dim: int,
+    max_period: int = 10000,
+    scaling_factor: float = 100.0,
+) -> jnp.ndarray:
     assert len(timesteps.shape) == 2 and timesteps.shape[-1] == 1
     half_dim = embedding_dim // 2
     emb = jnp.log(max_period) / (half_dim - 1)
@@ -11,17 +17,23 @@ def get_timestep_embedding(timesteps: jnp.ndarray, embedding_dim: int, max_perio
     assert emb.shape == (timesteps.shape[0], embedding_dim)
     return emb
 
+
 def get_activation(name: str) -> nn.activation:
-    if name == 'relu':
+    if name == "relu":
         return nn.relu
-    elif name == 'leaky_relu':
+    elif name == "leaky_relu":
         return nn.leaky_relu
-    elif name == 'tanh':
+    elif name == "elu":
+        return nn.elu
+    elif name == "gelu":
+        return nn.gelu
+    elif name == "tanh":
         return nn.tanh
-    elif name == 'sigmoid':
+    elif name == "sigmoid":
         return nn.sigmoid
     else:
-        raise ValueError(f'Activation {name} not recognized.')
+        raise ValueError(f"Activation {name} not recognized.")
+
 
 class MLP(nn.Module):
     out_dim: int
@@ -41,7 +53,8 @@ class MLP(nn.Module):
         else:
             x = nn.Dense(self.out_dim)(x)
         return x
-    
+
+
 class ScoreNet(nn.Module):
     out_dim: int
     time_embedding_dim: int
@@ -55,21 +68,27 @@ class ScoreNet(nn.Module):
     def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
         assert len(x.shape) == len(t.shape) == 2
         t = get_timestep_embedding(t, self.time_embedding_dim)
-        t = MLP(out_dim=self.embedding_dim,
-                act=self.act,
-                layer_dims=self.encoder_layer_dims,
-                apply_act_at_output=False,
-                using_batchnorm=self.using_batchnorm)(t, train)
-        x = MLP(out_dim=self.embedding_dim,
-                act=self.act,
-                layer_dims=self.encoder_layer_dims,
-                apply_act_at_output=False,
-                using_batchnorm=self.using_batchnorm)(x, train)
+        t = MLP(
+            out_dim=self.embedding_dim,
+            act=self.act,
+            layer_dims=self.encoder_layer_dims,
+            apply_act_at_output=False,
+            using_batchnorm=self.using_batchnorm,
+        )(t, train)
+        x = MLP(
+            out_dim=self.embedding_dim,
+            act=self.act,
+            layer_dims=self.encoder_layer_dims,
+            apply_act_at_output=False,
+            using_batchnorm=self.using_batchnorm,
+        )(x, train)
         assert t.shape == x.shape == (x.shape[0], self.embedding_dim)
         xt = jnp.concatenate([x, t], axis=-1)
-        score = MLP(out_dim=self.out_dim,
-                    act=self.act,
-                    layer_dims=self.decoder_layer_dims,
-                    apply_act_at_output=False,
-                    using_batchnorm=self.using_batchnorm)(xt, train)
+        score = MLP(
+            out_dim=self.out_dim,
+            act=self.act,
+            layer_dims=self.decoder_layer_dims,
+            apply_act_at_output=False,
+            using_batchnorm=self.using_batchnorm,
+        )(xt, train)
         return score

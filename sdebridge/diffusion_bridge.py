@@ -3,9 +3,9 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import tensorflow as tf
-import utils
 from tqdm.notebook import tqdm
 
+from . import utils
 from .networks import ScoreNet
 
 
@@ -26,6 +26,7 @@ class DiffusionBridge:
         self.d = dim
         self.T = end_time
         self.N = num_steps
+
         self.ts = jnp.linspace(0.0, self.T, self.N + 1)
         self.rng = rng
         self.true_score_transition = true_score_transition
@@ -149,8 +150,8 @@ class DiffusionBridge:
 
         Args:
             score_p_state (TrainState): s_{theta}(t, x)
-            initial_condition (jnp.ndarray): Z*(0) = X(T-t)
-            terminal_condition (jnp.ndarray): Z*(T) = X(0)
+            initial_condition (jnp.ndarray): Z*(T) = X(0)
+            terminal_condition (jnp.ndarray): Z*(0) = X(T-t)
             using_true_score (bool): If True, use the predefined score transition function.
 
         Returns:
