@@ -1,13 +1,14 @@
+import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
 
 def get_timestep_embedding(
-    timesteps: jnp.ndarray,
+    timesteps: jax.Array,
     embedding_dim: int,
     max_period: int = 10000,
     scaling_factor: float = 100.0,
-) -> jnp.ndarray:
+) -> jax.Array:
     assert len(timesteps.shape) == 2 and timesteps.shape[-1] == 1
     half_dim = embedding_dim // 2
     emb = jnp.log(max_period) / (half_dim - 1)
@@ -43,7 +44,7 @@ class MLP(nn.Module):
     using_batchnorm: bool = True
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, train: bool) -> jnp.ndarray:
+    def __call__(self, x: jax.Array, train: bool) -> jax.Array:
         for dim in self.layer_dims:
             x = get_activation(self.act)(nn.Dense(dim)(x))
             if self.using_batchnorm:
@@ -65,7 +66,7 @@ class ScoreNet(nn.Module):
     using_batchnorm: bool = True
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
+    def __call__(self, x: jax.Array, t: jax.Array, train: bool) -> jax.Array:
         assert len(x.shape) == len(t.shape) == 2
         t = get_timestep_embedding(t, self.time_embedding_dim)
         t = MLP(

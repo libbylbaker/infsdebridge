@@ -44,19 +44,19 @@ class DiffusionBridge:
         return jnp.trace(jacobian_covariance(x, t))
 
     def euler_maruyama_scaled(
-        self, initial_condition: jnp.ndarray, drift: callable, diffusion: callable
+        self, initial_condition: jax.Array, drift: callable, diffusion: callable
     ) -> dict:
         """Simulate the forward non-bridge process (X(t)):
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
 
         Args:
-            initial_condition (jnp.ndarray): X(0)
+            initial_condition (jax.Array): X(0)
             diffusion: function taking arguments  val, time
             drift: function taking arguments  val, time
 
         Returns:
-            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward non-bridge trajectories,
-                   "scaled_brownians": jnp.ndarray, (B, N, d) scaled stochastic updates for computing the gradients}
+            dict: {"trajectories": jax.Array, (B, N+1, d) forward non-bridge trajectories,
+                   "scaled_brownians": jax.Array, (B, N, d) scaled stochastic updates for computing the gradients}
         """
         assert initial_condition.shape[-1] == self.d
         B = initial_condition.shape[0]  # batch size
@@ -71,8 +71,8 @@ class DiffusionBridge:
             self.rng, _ = jax.random.split(self.rng)
             drift_step = dt * drift(val=X, time=t_now)
             brownian = jnp.sqrt(dt) * jax.random.normal(self.rng, shape=(B, self.d))
-            diffusion_step = utils.sb_multi(diffusion(val=X, time=t_now), brownian)
-            scaled_brownian = -utils.sb_multi(
+            diffusion_step = utils.batch_multi(diffusion(val=X, time=t_now), brownian)
+            scaled_brownian = -utils.batch_multi(
                 self.inv_covariance(X, t_now) / dt, diffusion_step
             )
             X = X + drift_step + diffusion_step  # Euler-Maruyama
@@ -86,8 +86,8 @@ class DiffusionBridge:
 
     def euler_maruyama_scaled_bridge(
         self,
-        initial_condition: jnp.ndarray,
-        terminal_condition: jnp.ndarray,
+        initial_condition: jax.Array,
+        terminal_condition: jax.Array,
         drift: callable,
         diffusion: callable,
     ) -> dict:
@@ -95,14 +95,14 @@ class DiffusionBridge:
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
 
         Args:
-            initial_condition (jnp.ndarray): X(0)
-            terminal_condition (jnp.ndarray): X(T)
+            initial_condition (jax.Array): X(0)
+            terminal_condition (jax.Array): X(T)
             diffusion: function taking arguments  val, time
             drift: function taking arguments  val, time
 
         Returns:
-            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward non-bridge trajectories,
-                   "scaled_brownians": jnp.ndarray, (B, N, d) scaled stochastic updates for computing the gradients}
+            dict: {"trajectories": jax.Array, (B, N+1, d) forward non-bridge trajectories,
+                   "scaled_brownians": jax.Array, (B, N, d) scaled stochastic updates for computing the gradients}
         """
 
         non_bridge_process = self.euler_maruyama_scaled(
@@ -117,7 +117,7 @@ class DiffusionBridge:
         last_val = trajectories[:, -2, :]
         last_drift = drift(val=last_val, time=t) * dt
         last_diffusion = terminal_condition - last_val - last_drift
-        scaled_brownian = -utils.sb_multi(
+        scaled_brownian = -utils.batch_multi(
             self.inv_covariance(last_val, t) / dt, last_diffusion
         )
         scaled_brownians = scaled_brownians.at[:, -1, :].set(scaled_brownian)
@@ -128,11 +128,11 @@ class DiffusionBridge:
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
 
         Args:
-            initial_condition (jnp.ndarray): X(0)
+            initial_condition (jax.Array): X(0)
 
         Returns:
-            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward non-bridge trajectories,
-                   "brownian_increments": jnp.ndarray, (B, N, d) brownian increments for computing the gradients}
+            dict: {"trajectories": jax.Array, (B, N+1, d) forward non-bridge trajectories,
+                   "brownian_increments": jax.Array, (B, N, d) brownian increments for computing the gradients}
         """
         return self.euler_maruyama_scaled(
             initial_condition=initial_condition, drift=self.f, diffusion=self.g
@@ -140,8 +140,8 @@ class DiffusionBridge:
 
     def simulate_backward_bridge(
         self,
-        initial_condition: jnp.ndarray,
-        terminal_condition: jnp.ndarray,
+        initial_condition: jax.Array,
+        terminal_condition: jax.Array,
         using_true_score: bool = False,
         score_p_state: utils.TrainState = None,
     ) -> dict:
@@ -150,13 +150,13 @@ class DiffusionBridge:
 
         Args:
             score_p_state (TrainState): s_{theta}(t, x)
-            initial_condition (jnp.ndarray): Z*(T) = X(0)
-            terminal_condition (jnp.ndarray): Z*(0) = X(T-t)
+            initial_condition (jax.Array): Z*(T) = X(0)
+            terminal_condition (jax.Array): Z*(0) = X(T-t)
             using_true_score (bool): If True, use the predefined score transition function.
 
         Returns:
-            dict: {"trajectories": jnp.ndarray, (B, N+1, d) backward bridge trajectories,
-                   "scaled_brownians": jnp.ndarray, (B, N, d) brownian increments for computing the gradients}
+            dict: {"trajectories": jax.Array, (B, N+1, d) backward bridge trajectories,
+                   "scaled_brownians": jax.Array, (B, N, d) brownian increments for computing the gradients}
         !!! N.B. trajectories = [Z*(T), ..., Z*(0)], which is opposite to expected simulate_backward_bridge !!!
         !!! N.B. scaled_brownians is also therefore exactly the opposite to what's given in simulate backward bridge!!!
         """
@@ -172,7 +172,7 @@ class DiffusionBridge:
             else:
                 score_p = utils.eval_score(state=score_p_state, x=val, t=inverted_time)
             rev_drift = -self.f(val, inverted_time)
-            score_term = utils.sb_multi(self.covariance(val, inverted_time), score_p)
+            score_term = utils.batch_multi(self.covariance(val, inverted_time), score_p)
             div_term = self.divergence_covariance(val, inverted_time)
             return rev_drift + score_term + div_term
 
@@ -194,8 +194,8 @@ class DiffusionBridge:
 
     def simulate_forward_bridge(
         self,
-        initial_condition: jnp.ndarray,
-        terminal_condition: jnp.ndarray,
+        initial_condition: jax.Array,
+        terminal_condition: jax.Array,
         true_score: callable = None,
         score_p_state: utils.TrainState = None,
         score_p_star_state: utils.TrainState = None,
@@ -206,11 +206,11 @@ class DiffusionBridge:
         Args:
             score_p_state (utils.TrainState): s_{theta}(t, x)
             score_p_star_state (utils.TrainState): s*_{theta}(t, x)
-            initial_condition (jnp.ndarray): X*(0)
-            terminal_condition (jnp.ndarray): X*(T)
+            initial_condition (jax.Array): X*(0)
+            terminal_condition (jax.Array): X*(T)
 
         Returns:
-            dict: {"trajectories": jnp.ndarray, (B, N+1, d) forward bridge trajectories,
+            dict: {"trajectories": jax.Array, (B, N+1, d) forward bridge trajectories,
                    "scaled_brownians": None}
         """
 
@@ -225,7 +225,7 @@ class DiffusionBridge:
                 score_p_star = utils.eval_score(state=score_p_star_state, x=val, t=time)
                 score_h = score_p_star - score_p
             orig_drift = self.f(val=val, time=time)
-            bridge_term = utils.sb_multi(self.covariance(x=val, t=time), score_h)
+            bridge_term = utils.batch_multi(self.covariance(x=val, t=time), score_h)
             return orig_drift + bridge_term
 
         def diffusion(val, time):
@@ -241,20 +241,20 @@ class DiffusionBridge:
 
     def get_p_gradient(
         self,
-        forward_trajectories: jnp.ndarray,
-        scaled_brownians: jnp.ndarray,
+        forward_trajectories: jax.Array,
+        scaled_brownians: jax.Array,
         epsilon: float = 0.0,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         """Compute g(t_{m-1}, X_{m-1}, t_m, X_m) using the new expression for eq. (8):
             g(t_{m-1}, X_{m-1}, t_m, X_m) = - (\Sigma(t_{m-1}, X_{m-1}) * \delta t)^{-1} * \sigma(t_{m-1}, X_{m-1}) * \delta W(t_{m-1}, X_{m-1})
 
         Args:
-            forward_trajectories (jnp.ndarray): (B, N+1, d) forward non-bridge trajectories.
-            scaled_brownians (jnp.ndarray): (B, N, d) scaled stochastic updates for computing the gradients.
+            forward_trajectories (jax.Array): (B, N+1, d) forward non-bridge trajectories.
+            scaled_brownians (jax.Array): (B, N, d) scaled stochastic updates for computing the gradients.
             epsilon (float, optional): a magical weight to enforce the initial constraint. Defaults to 0.0.
 
         Returns:
-            jnp.ndarray: (B, N, d) g(t_{m-1}, X_{m-1}, t_m, X_m)
+            jax.Array: (B, N, d) g(t_{m-1}, X_{m-1}, t_m, X_m)
         """
         assert forward_trajectories.shape[-1] == self.d
         B = forward_trajectories.shape[0]  # batch size
@@ -275,7 +275,7 @@ class DiffusionBridge:
             scaled_brownian = scaled_brownians[:, t_idx, :]
             additional_constraint = (
                 epsilon
-                * utils.sb_multi(
+                * utils.batch_multi(
                     self.inv_covariance(X_m_minus_1, t_m_minus_1), (X0 - X_m)
                 )
                 / (self.T - t_m)
@@ -286,19 +286,19 @@ class DiffusionBridge:
 
     def get_p_star_gradient(
         self,
-        backward_trajectories: jnp.ndarray,
-        scaled_brownians: jnp.ndarray,
+        backward_trajectories: jax.Array,
+        scaled_brownians: jax.Array,
         epsilon: float = 0.0,
-    ) -> jnp.ndarray:
+    ) -> jax.Array:
         """Compute g^(t_{m-1}, Z*_{m-1}, t_m, Z*_m) for eq. (18), but use the same trick as in get_p_gradient
 
         Args:
-            backward_trajectories (jnp.ndarray): (B, N+1, d) backward bridge trajectories
-            scaled_brownians (jnp.ndarray): (B, N, d) scaled stochastic updates for computing the gradients.
+            backward_trajectories (jax.Array): (B, N+1, d) backward bridge trajectories
+            scaled_brownians (jax.Array): (B, N, d) scaled stochastic updates for computing the gradients.
             epsilon (float, optional): a magical weight to enforce the initial constraint. Defaults to 1e-4.
 
         Returns:
-            jnp.ndarray: (B, N, d) g^(t_{m-1}, Z*_{m-1}, t_m, Z*_m)
+            jax.Array: (B, N, d) g^(t_{m-1}, Z*_{m-1}, t_m, Z*_m)
         """
         assert backward_trajectories.shape[-1] == self.d
         B = backward_trajectories.shape[0]  # batch size
@@ -322,7 +322,7 @@ class DiffusionBridge:
             scaled_brownian = scaled_brownians[:, reverse_t_idx - 1, :]
             additional_constraint = (
                 epsilon
-                * utils.sb_multi(
+                * utils.batch_multi(
                     self.inv_covariance(Z_m_minus_1, reverse_t_m_minus_1), (XT - Z_m)
                 )
                 / reverse_t_m
@@ -335,8 +335,8 @@ class DiffusionBridge:
         self,
         batch_size: int,
         process_type: str,
-        initial_condition: jnp.ndarray,
-        terminal_condition: jnp.ndarray,
+        initial_condition: jax.Array,
+        terminal_condition: jax.Array,
         score_p_state: utils.TrainState,
         score_p_star_state: utils.TrainState,
     ) -> callable:
@@ -370,7 +370,13 @@ class DiffusionBridge:
 
         return generator
 
-    def learn_p_score(self, initial_condition: jnp.ndarray, setup_params: dict):
+    def learn_p_score(
+        self,
+        initial_condition: jax.Array,
+        normalized: bool = False,
+        reduce_mean: bool = True,
+        setup_params: dict = None,
+    ) -> utils.TrainState:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
@@ -391,9 +397,14 @@ class DiffusionBridge:
                 (training_params["batch_size"], self.N, self.d),
             ],
         )
+        reduce_operation = (
+            jax.vmap(jnp.mean, in_axes=-1)
+            if reduce_mean
+            else jax.vmap(0.5 * jnp.sum, in_axes=-1)
+        )
 
         @jax.jit
-        def train_step(state: utils.TrainState, batch: tuple):
+        def train_step(state: utils.TrainState, batch: tuple) -> utils.TrainState:
             trajectories, scaled_brownians = batch
             ts = utils.flatten_batch(
                 utils.unsqueeze(
@@ -407,7 +418,7 @@ class DiffusionBridge:
             score_p_gradients = utils.flatten_batch(score_p_gradients)  # (B*N, d)
             trajectories = utils.flatten_batch(trajectories[:, 1:, :])  # (B*N, d)
 
-            def loss_fn(params):
+            def loss_fn(params) -> tuple:
                 score_p_est, updates = state.apply_fn(
                     {"params": params, "batch_stats": state.batch_stats},
                     x=trajectories,
@@ -415,7 +426,14 @@ class DiffusionBridge:
                     train=True,
                     mutable=["batch_stats"],
                 )  # (B*N, d)
-                loss = jnp.mean(jnp.square((score_p_est - score_p_gradients)))
+                loss = jnp.square((score_p_est - score_p_gradients))
+                loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
+                if normalized:
+                    normalization = jnp.mean(
+                        score_p_gradients**2, axis=-1
+                    )  # E[||\nabla\log p(xt|x0)||^2]
+                    loss = loss / normalization
+                loss = jnp.mean(loss, axis=0)
                 return loss, updates
 
             grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -455,11 +473,13 @@ class DiffusionBridge:
 
     def learn_p_star_score(
         self,
-        initial_condition: jnp.ndarray,
-        terminal_condition: jnp.ndarray,
+        initial_condition: jax.Array,
+        terminal_condition: jax.Array,
         score_p_state: utils.TrainState,
-        setup_params: dict,
-    ):
+        normalized: bool = False,
+        reduce_mean: bool = True,
+        setup_params: dict = None,
+    ) -> utils.TrainState:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
@@ -481,9 +501,14 @@ class DiffusionBridge:
                 (training_params["batch_size"], self.N, self.d),
             ],
         )
+        reduce_operation = (
+            jax.vmap(jnp.mean, in_axes=-1)
+            if reduce_mean
+            else jax.vmap(0.5 * jnp.sum, in_axes=-1)
+        )
 
         @jax.jit
-        def train_step(state: utils.TrainState, batch: tuple):
+        def train_step(state: utils.TrainState, batch: tuple) -> utils.TrainState:
             trajectories, scaled_brownians = batch
             ts = utils.flatten_batch(
                 utils.unsqueeze(
@@ -499,7 +524,7 @@ class DiffusionBridge:
             )  # (B*N, d)
             trajectories = utils.flatten_batch(trajectories[:, :-1, :])  # (B*N, d)
 
-            def loss_fn(params):
+            def loss_fn(params) -> tuple:
                 score_p_star_est, updates = state.apply_fn(
                     {"params": params, "batch_stats": state.batch_stats},
                     x=trajectories,
@@ -507,7 +532,14 @@ class DiffusionBridge:
                     train=True,
                     mutable=["batch_stats"],
                 )  # (B*N, d)
-                loss = jnp.mean(jnp.square((score_p_star_est - score_p_star_gradients)))
+                loss = jnp.square((score_p_star_est - score_p_star_gradients))
+                loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
+                if normalized:
+                    normalization = jnp.mean(
+                        score_p_star_gradients**2, axis=-1
+                    )  # E[||\nabla\log p*(xt|x0)||^2]
+                    loss = loss / normalization
+                loss = jnp.mean(loss, axis=0)
                 return loss, updates
 
             grad_fn = jax.value_and_grad(loss_fn, has_aux=True)

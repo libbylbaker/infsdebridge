@@ -1,3 +1,4 @@
+from collections import namedtuple
 from functools import partial
 
 import jax
@@ -13,27 +14,22 @@ from flax.training import train_state
 
 
 ### Dimension helpers
-def flatten_batch(x: jnp.ndarray):
+def flatten_batch(x: jax.Array):
     assert len(x.shape) >= 2
     return x.reshape(-1, x.shape[-1])
 
 
-def unsqueeze(x: jnp.ndarray, axis: int):
+def unsqueeze(x: jax.Array, axis: int):
     return jnp.expand_dims(x, axis=axis)
 
 
-def squeeze(x: jnp.ndarray, axis: int):
+def squeeze(x: jax.Array, axis: int):
     return jnp.squeeze(x, axis=axis)
 
 
-def sb_multi(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
-    """Perform matrix-vector multiplication for a single matrix/vector and each matrix/vector in a batch."""
+def batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
+    """Perform matrix multiplication for a single matrix over each matrix in a batch."""
     return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(None, 0), out_axes=0)(a, b)
-
-
-def bb_multi(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
-    """Perform matrix_vector multiplication for each pair of matrix/vector and matrix/vector in two batches."""
-    return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(0, 0), out_axes=0)(a, b)
 
 
 ### Network helpers
@@ -48,7 +44,7 @@ class TrainState(train_state.TrainState):
 
 
 def create_train_state(
-    module: nn.Module, rng: jnp.ndarray, learning_rate: float, input_shapes: list
+    module: nn.Module, rng: jax.Array, learning_rate: float, input_shapes: list
 ) -> TrainState:
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
     variables = module.init(rng, *init_inputs, train=False)
@@ -65,12 +61,15 @@ def create_train_state(
     )
 
 
-@jax.jit
-def eval_score(state: TrainState, x: jnp.ndarray, t: float) -> jnp.ndarray:
-    assert len(x.shape) == 2  # (B, d)
-    t = jnp.tile(t, reps=(x.shape[0], 1))  # (B, 1)
+@partial(jax.jit, static_argnums=(0,))
+def eval_score(state: TrainState, val: jax.Array, time: float) -> jax.Array:
+    assert len(val.shape) == 2  # (B, d)
+    time = jnp.tile(time, reps=(val.shape[0], 1))  # (B, 1)
     return state.apply_fn(
-        {"params": state.params, "batch_stats": state.batch_stats}, x, t, train=False
+        {"params": state.params, "batch_stats": state.batch_stats},
+        val,
+        time,
+        train=False,
     )
 
 
@@ -91,12 +90,55 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     return iterable_dataset
 
 
+### SDE helpers
+@partial(jax.jit, static_argnums=(0,))
+def euler_maruyama(
+    sde, initial_val: jax.Array, rng: jax.Array, terminal_val: jax.Array = None
+) -> dict:
+    """Euler-Maruyama solver for SDEs"""
+    enforce_terminal_constraint = terminal_val is not None
+    assert initial_val.shape[-1] == sde.d
+    assert terminal_val.shape[-1] == sde.d if enforce_terminal_constraint else True
+    SolverState = namedtuple("SolverState", ["val", "scaled_stochastic", "rng"])
+    init_state = SolverState(
+        val=initial_val, scaled_stochastic=jnp.empty_like(initial_val), rng=rng
+    )
+
+    def euler_maruyama_step(state: SolverState, time: float) -> tuple:
+        """Euler-Maruyama step"""
+        new_rng, _ = jax.random.split(state.rng)
+        drift_step = sde.drift(state.val, time) * sde.dt
+        brownian_step = jnp.sqrt(sde.dt) * jax.random.normal(
+            new_rng, shape=state.val.shape
+        )
+        diffusion_step = batch_multi(sde.diffusion(state.val, time), brownian_step)
+        inv_covariance = sde.inv_covariance(state.val, time)
+        scaled_stochastic = -batch_multi(inv_covariance / sde.dt, diffusion_step)
+        new_val = state.val + drift_step + diffusion_step
+        new_state = SolverState(
+            val=new_val, scaled_stochastic=scaled_stochastic, rng=new_rng
+        )
+        return new_state, (state.val, state.scaled_stochastic, state.rng)
+
+    _, (trajectories, scaled_stochastics, rng) = jax.lax.scan(
+        euler_maruyama_step, init=init_state, xs=(sde.ts)
+    )
+
+    if enforce_terminal_constraint:
+        trajectories = trajectories.at[-1].set(terminal_val)
+    return {
+        "trajectories": jnp.swapaxes(trajectories, 0, 1),
+        "scaled_stochastics": jnp.swapaxes(scaled_stochastics, 0, 1),
+        "rng": rng,
+    }
+
+
 ### Plotting helpers
 def plot_2d_vector_field(
     X: callable,
     X_ref: callable,
-    xs: jnp.ndarray,
-    ts: jnp.ndarray,
+    xs: jax.Array,
+    ts: jax.Array,
     suptitle: str,
     scale: float = None,
     **kwargs,
@@ -123,7 +165,7 @@ def plot_2d_vector_field(
     plt.show()
 
 
-def plot_2d_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
+def plot_2d_trajectories(trajectories: jax.Array, title: str, **kwargs):
     colormap = plt.cm.get_cmap("spring")
     num_trajectories = trajectories.shape[0]
     colors = [colormap(i) for i in jnp.linspace(0, 1, num_trajectories)]
@@ -155,7 +197,7 @@ def plot_2d_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
     plt.title(title)
 
 
-def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
+def plot_trajectories(trajectories: jax.Array, title: str, **kwargs):
     colormap = plt.cm.get_cmap("spring")
     assert len(trajectories.shape) == 3
     num_trajectories = trajectories.shape[0]
@@ -188,12 +230,11 @@ def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
                 edgecolors="k",
                 zorder=2,
             )
-    plt.xlim(-2.0, 2.0)
-    plt.ylim(-2.0, 2.0)
+    plt.axis("equal")
     plt.title(title)
 
 
-def plot_single_trajectory(trajectory: jnp.ndarray, title: str, **kwargs):
+def plot_single_trajectory(trajectory: jax.Array, title: str, **kwargs):
     colormap = plt.cm.get_cmap("jet")
     assert len(trajectory.shape) == 2
     dim = trajectory.shape[-1]
@@ -205,7 +246,7 @@ def plot_single_trajectory(trajectory: jnp.ndarray, title: str, **kwargs):
             trajectory[:, 2 * i + 1],
             color=colors[i],
             zorder=1,
-            alpha=0.2,
+            alpha=0.5,
             **kwargs,
         )
         plt.scatter(
@@ -224,20 +265,20 @@ def plot_single_trajectory(trajectory: jnp.ndarray, title: str, **kwargs):
             edgecolors="k",
             zorder=2,
         )
-    plt.xlim(-2.0, 2.0)
-    plt.ylim(-2.0, 2.0)
+    plt.axis("equal")
     plt.title(title)
 
 
 ### Data helpers
-def sample_circle(num_points: int, scale: float, shifts: jnp.ndarray) -> jnp.ndarray:
+def sample_circle(num_points: int, scale: float, shifts: jax.Array) -> jax.Array:
     theta = jnp.linspace(0, 2 * jnp.pi, num_points, endpoint=False)
     x = jnp.cos(theta)
     y = jnp.sin(theta)
     return (scale * jnp.stack([x, y], axis=1) + shifts).flatten()
 
 
-def sample_square(num_points: int, scale: float, shifts: jnp.ndarray) -> jnp.ndarray:
+# todo: The order of sampled points needs to be checked.
+def sample_square(num_points: int, scale: float, shifts: jax.Array) -> jax.Array:
     num_points_per_side = num_points // 4
     x1 = jnp.linspace(-1, 1, num_points_per_side, endpoint=False)
     x2 = jnp.linspace(1, -1, num_points_per_side, endpoint=False)
