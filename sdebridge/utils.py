@@ -61,7 +61,7 @@ def create_train_state(
     )
 
 
-@partial(jax.jit, static_argnums=(0,))
+@jax.jit
 def eval_score(state: TrainState, val: jax.Array, time: float) -> jax.Array:
     assert len(val.shape) == 2  # (B, d)
     time = jnp.tile(time, reps=(val.shape[0], 1))  # (B, 1)
@@ -76,7 +76,8 @@ def eval_score(state: TrainState, val: jax.Array, time: float) -> jax.Array:
 def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     if type(dtype) == tf.DType and type(shape) == list:
         dataset = tf.data.Dataset.from_generator(
-            generator, output_signature=(tf.TensorSpec(shape=shape, dtype=dtype))
+            generator,
+            output_signature=(tf.TensorSpec(shape=shape, dtype=dtype)),
         )
     elif type(dtype) == tuple and type(shape) == list:
         assert len(dtype) == len(shape)
@@ -90,8 +91,14 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     return iterable_dataset
 
 
+def get_next_batch(generator: callable, rng: jax.Array):
+    new_rng, _ = jax.random.split(rng)
+    data = next(generator(new_rng))
+    return data, new_rng
+
+
 ### SDE helpers
-@partial(jax.jit, static_argnums=(0,))
+@jax.tree_util.Partial(jax.jit, static_argnames=("sde"))
 def euler_maruyama(
     sde, initial_val: jax.Array, rng: jax.Array, terminal_val: jax.Array = None
 ) -> dict:
@@ -120,7 +127,7 @@ def euler_maruyama(
         )
         return new_state, (state.val, state.scaled_stochastic, state.rng)
 
-    _, (trajectories, scaled_stochastics, rng) = jax.lax.scan(
+    _, (trajectories, scaled_stochastics, rngs) = jax.lax.scan(
         euler_maruyama_step, init=init_state, xs=(sde.ts)
     )
 
@@ -129,7 +136,7 @@ def euler_maruyama(
     return {
         "trajectories": jnp.swapaxes(trajectories, 0, 1),
         "scaled_stochastics": jnp.swapaxes(scaled_stochastics, 0, 1),
-        "rng": rng,
+        "rngs": rngs,
     }
 
 
