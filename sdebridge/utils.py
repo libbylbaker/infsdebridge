@@ -106,38 +106,62 @@ def euler_maruyama(
     enforce_terminal_constraint = terminal_val is not None
     assert initial_val.shape[-1] == sde.d
     assert terminal_val.shape[-1] == sde.d if enforce_terminal_constraint else True
-    SolverState = namedtuple("SolverState", ["val", "scaled_stochastic", "rng"])
+    SolverState = namedtuple(
+        "SolverState", ["val", "scaled_stochastic_increment", "step_rng"]
+    )
     init_state = SolverState(
-        val=initial_val, scaled_stochastic=jnp.empty_like(initial_val), rng=rng
+        val=initial_val,
+        scaled_stochastic_increment=jnp.empty_like(initial_val),
+        step_rng=rng,
     )
 
     def euler_maruyama_step(state: SolverState, time: float) -> tuple:
         """Euler-Maruyama step"""
-        new_rng, _ = jax.random.split(state.rng)
+        new_rng, _ = jax.random.split(state.step_rng)
         drift_step = sde.drift(state.val, time) * sde.dt
         brownian_step = jnp.sqrt(sde.dt) * jax.random.normal(
             new_rng, shape=state.val.shape
         )
         diffusion_step = batch_multi(sde.diffusion(state.val, time), brownian_step)
-        inv_covariance = sde.inv_covariance(state.val, time)
-        scaled_stochastic = -batch_multi(inv_covariance / sde.dt, diffusion_step)
+        # inv_covariance = sde.inv_covariance(state.val, time)
+        # scaled_stochastic = -batch_multi(inv_covariance / sde.dt, diffusion_step)
+        scaled_stochastic_increment = (
+            -batch_multi(sde.inv_diffusion(state.val, time), brownian_step) / sde.dt
+        )
         new_val = state.val + drift_step + diffusion_step
         new_state = SolverState(
-            val=new_val, scaled_stochastic=scaled_stochastic, rng=new_rng
+            val=new_val,
+            scaled_stochastic_increment=scaled_stochastic_increment,
+            step_rng=new_rng,
         )
-        return new_state, (state.val, state.scaled_stochastic, state.rng)
+        return new_state, (state.val, state.scaled_stochastic_increment, state.step_rng)
 
-    _, (trajectories, scaled_stochastics, rngs) = jax.lax.scan(
-        euler_maruyama_step, init=init_state, xs=(sde.ts)
+    _, (trajectories, scaled_stochastic_increments, step_rngs) = jax.lax.scan(
+        euler_maruyama_step, init=init_state, xs=(sde.ts[:-1])
     )
 
     if enforce_terminal_constraint:
         trajectories = trajectories.at[-1].set(terminal_val)
     return {
         "trajectories": jnp.swapaxes(trajectories, 0, 1),
-        "scaled_stochastics": jnp.swapaxes(scaled_stochastics, 0, 1),
-        "rngs": rngs,
+        "scaled_stochastic_increments": jnp.swapaxes(
+            scaled_stochastic_increments, 0, 1
+        ),
+        "step_rngs": step_rngs,
     }
+
+
+@jax.vmap
+def weighted_norm(x: jax.Array, weight: jax.Array) -> jax.Array:
+    assert x.shape[0] == weight.shape[0]
+    Wx = jnp.dot(weight, x)
+    xWx = jnp.dot(x, Wx)
+    return xWx
+
+
+@jax.vmap
+def normal_norm(x: jax.Array, weight: jax.Array) -> jax.Array:
+    return jnp.square(x)
 
 
 ### Plotting helpers

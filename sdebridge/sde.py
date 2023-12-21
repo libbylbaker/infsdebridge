@@ -28,7 +28,7 @@ class SDE(abc.ABC):
     @property
     def ts(self) -> jax.Array:
         """time steps array (except the starting point)"""
-        ts = jnp.linspace(0.0, self.T, self.N)
+        ts = jnp.linspace(0.0, self.T, self.N + 1)
         return ts
 
     @abc.abstractmethod
@@ -40,6 +40,10 @@ class SDE(abc.ABC):
     def diffusion(self, val: jax.Array, time: float) -> jax.Array:
         """diffusion term"""
         raise NotImplementedError
+
+    def inv_diffusion(self, val: jax.Array, time: float) -> jax.Array:
+        """inverse of diffusion term"""
+        return jnp.linalg.inv(self.diffusion(val, time))
 
     def covariance(self, val: jax.Array, time: float) -> jax.Array:
         """covariance term: \sigma @ \sigma^T"""
@@ -131,20 +135,14 @@ class BrownianSDE(SDE):
         return jnp.eye(self.d)
 
     def score_p_density(
-        self, val: jax.Array, time: float, init_val: jax.Array
+        self, val: jax.Array, time: float, init_val: jax.Array, term_val: jax.Array
     ) -> jax.Array:
-        # if time < 1e-4:
-        #     return - (val - init_val) / (time + 0.25 * self.dt)
-        # else:
-        return -(val - init_val) / (time)
+        return -(val - init_val) / (time + 1e-4)
 
     def score_h_density(
-        self, val: jax.Array, time: float, end_val: jax.Array
+        self, val: jax.Array, time: float, init_val: jax.Array, term_val: jax.Array
     ) -> jax.Array:
-        # if self.T - time < 1e-4:
-        #     return (end_val - val) / (self.T - time + 0.25 * self.dt)
-        # else:
-        return (end_val - val) / (self.T - time)
+        return -(val - term_val) / (time - self.T + 1e-4)
 
 
 class QSDE(SDE):
