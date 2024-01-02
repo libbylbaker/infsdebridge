@@ -11,6 +11,8 @@ from clu import metrics
 from flax import linen as nn
 from flax import struct
 from flax.training import train_state
+from jax.tree_util import Partial
+from jax.typing import ArrayLike
 
 
 ### Dimension helpers
@@ -27,9 +29,14 @@ def squeeze(x: jax.Array, axis: int):
     return jnp.squeeze(x, axis=axis)
 
 
-def batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
-    """Perform matrix multiplication for a single matrix over each matrix in a batch."""
-    return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(None, 0), out_axes=0)(a, b)
+def batch_batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
+    """Perform matrix multiplication for batched matrices."""
+    return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(0, 0), out_axes=0)(a, b)
+
+
+def single_batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
+    """Perform matrix multiplication for batched matrix and single matrix."""
+    return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(0, 0), out_axes=0)(a, b)
 
 
 ### Network helpers
@@ -62,15 +69,16 @@ def create_train_state(
 
 
 @jax.jit
-def eval_score(state: TrainState, val: jax.Array, time: float) -> jax.Array:
-    assert len(val.shape) == 2  # (B, d)
-    time = jnp.tile(time, reps=(val.shape[0], 1))  # (B, 1)
-    return state.apply_fn(
+def eval_score(state: TrainState, val: jax.Array, time: ArrayLike) -> jax.Array:
+    assert len(val.shape) == 2, f"Invalid shape: {val.shape}"
+    time = jnp.tile(time, (val.shape[0], 1))
+    score = state.apply_fn(
         {"params": state.params, "batch_stats": state.batch_stats},
         val,
         time,
         train=False,
     )
+    return score
 
 
 def get_iterable_dataset(generator: callable, dtype: any, shape: any):
@@ -98,33 +106,34 @@ def get_next_batch(generator: callable, rng: jax.Array):
 
 
 ### SDE helpers
-@jax.tree_util.Partial(jax.jit, static_argnames=("sde"))
+@Partial(jax.jit, static_argnames=("sde"))
 def euler_maruyama(
-    sde, initial_val: jax.Array, rng: jax.Array, terminal_val: jax.Array = None
+    sde, initial_vals: jax.Array, rng: jax.Array, terminal_vals: jax.Array = None
 ) -> dict:
     """Euler-Maruyama solver for SDEs"""
-    enforce_terminal_constraint = terminal_val is not None
-    assert initial_val.shape[-1] == sde.d
-    assert terminal_val.shape[-1] == sde.d if enforce_terminal_constraint else True
+    enforce_terminal_constraint = terminal_vals is not None
+    assert initial_vals.shape[-1] == sde.dim
+    assert terminal_vals.shape[-1] == sde.dim if enforce_terminal_constraint else True
+
     SolverState = namedtuple(
         "SolverState", ["val", "scaled_stochastic_increment", "step_rng"]
     )
     init_state = SolverState(
-        val=initial_val,
-        scaled_stochastic_increment=jnp.empty_like(initial_val),
+        val=initial_vals,
+        scaled_stochastic_increment=jnp.empty_like(initial_vals),
         step_rng=rng,
     )
 
-    def euler_maruyama_step(state: SolverState, time: float) -> tuple:
+    def euler_maruyama_step(state: SolverState, time: ArrayLike) -> tuple:
         """Euler-Maruyama step"""
         new_rng, _ = jax.random.split(state.step_rng)
         drift_step = sde.drift(state.val, time) * sde.dt
         brownian_step = jnp.sqrt(sde.dt) * jax.random.normal(
             new_rng, shape=state.val.shape
         )
-        diffusion_step = batch_multi(sde.diffusion(state.val, time), brownian_step)
-        # inv_covariance = sde.inv_covariance(state.val, time)
-        # scaled_stochastic = -batch_multi(inv_covariance / sde.dt, diffusion_step)
+        diffusion_step = batch_batch_multi(
+            sde.diffusion(state.val, time), brownian_step
+        )
         scaled_stochastic_increment = (
             -batch_multi(sde.inv_diffusion(state.val, time), brownian_step) / sde.dt
         )
@@ -141,7 +150,7 @@ def euler_maruyama(
     )
 
     if enforce_terminal_constraint:
-        trajectories = trajectories.at[-1].set(terminal_val)
+        trajectories = trajectories.at[-1].set(terminal_vals)
     return {
         "trajectories": jnp.swapaxes(trajectories, 0, 1),
         "scaled_stochastic_increments": jnp.swapaxes(
@@ -152,7 +161,7 @@ def euler_maruyama(
 
 
 @jax.vmap
-def weighted_norm(x: jax.Array, weight: jax.Array) -> jax.Array:
+def weighted_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
     assert x.shape[0] == weight.shape[0]
     Wx = jnp.dot(weight, x)
     xWx = jnp.dot(x, Wx)
@@ -160,8 +169,30 @@ def weighted_norm(x: jax.Array, weight: jax.Array) -> jax.Array:
 
 
 @jax.vmap
-def normal_norm(x: jax.Array, weight: jax.Array) -> jax.Array:
+def normal_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
     return jnp.square(x)
+
+
+def Q_kernel(distance: jax.Array, alpha: float, sigma: float) -> jax.Array:
+    return (
+        0.5
+        * (alpha**2)
+        * (sigma**2)
+        * jnp.pi
+        * jnp.exp(-0.5 * jnp.sum(jnp.square(distance), axis=-1) / (sigma**2))
+    )
+
+
+def eval_Q(
+    x: jax.Array, alpha: float, sigma: float
+) -> jax.Array:  # evaluate for a single point
+    x_coords = x.reshape(-1, 2)
+    dim = x_coords.shape[0]
+    relative_distance = x_coords[:, jnp.newaxis, :] - x_coords[jnp.newaxis, :, :]
+    kernel = Q_kernel(relative_distance, alpha, sigma)
+    Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
+    Q = Q.reshape(2 * dim, 2 * dim)
+    return Q
 
 
 ### Plotting helpers

@@ -3,20 +3,24 @@ import jax.numpy as jnp
 from flax import linen as nn
 
 
-def get_timestep_embedding(
-    timesteps: jax.Array,
+def get_time_step_embedding(
+    time_steps: jax.Array,
     embedding_dim: int,
     max_period: int = 10000,
     scaling_factor: float = 100.0,
 ) -> jax.Array:
-    assert len(timesteps.shape) == 2 and timesteps.shape[-1] == 1
-    half_dim = embedding_dim // 2
-    emb = jnp.log(max_period) / (half_dim - 1)
-    emb = jnp.exp(jnp.arange(half_dim, dtype=jnp.float32) * -emb)
-    emb = scaling_factor * timesteps * emb[None, :]
-    emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
-    assert emb.shape == (timesteps.shape[0], embedding_dim)
-    return emb
+    def encode_scalar(t: jax.Array) -> jax.Array:
+        k = embedding_dim // 2
+        emb = jnp.log(max_period) / (k - 1)
+        emb = jnp.exp(jnp.arange(k, dtype=jnp.float32) * -emb)
+        emb = scaling_factor * t * emb
+        emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
+        return emb
+
+    if len(time_steps.shape) == 0:
+        return encode_scalar(time_steps)
+    else:
+        return jax.vmap(encode_scalar)(time_steps)
 
 
 def get_activation(name: str) -> nn.activation:
@@ -59,31 +63,29 @@ class MLP(nn.Module):
 class ScoreNet(nn.Module):
     out_dim: int
     time_embedding_dim: int
-    embedding_dim: int
+    encoding_dim: int
     act: str
     encoder_layer_dims: list
     decoder_layer_dims: list
-    using_batchnorm: bool = True
+    using_batchnorm: bool = False
 
     @nn.compact
     def __call__(self, x: jax.Array, t: jax.Array, train: bool) -> jax.Array:
-        assert len(x.shape) == len(t.shape) == 2
-        t = get_timestep_embedding(t, self.time_embedding_dim)
+        t = get_time_step_embedding(t, self.time_embedding_dim)
         t = MLP(
-            out_dim=self.embedding_dim,
+            out_dim=self.encoding_dim,
             act=self.act,
             layer_dims=self.encoder_layer_dims,
             apply_act_at_output=False,
             using_batchnorm=self.using_batchnorm,
         )(t, train)
         x = MLP(
-            out_dim=self.embedding_dim,
+            out_dim=self.encoding_dim,
             act=self.act,
             layer_dims=self.encoder_layer_dims,
             apply_act_at_output=False,
             using_batchnorm=self.using_batchnorm,
         )(x, train)
-        assert t.shape == x.shape == (x.shape[0], self.embedding_dim)
         xt = jnp.concatenate([x, t], axis=-1)
         score = MLP(
             out_dim=self.out_dim,
@@ -93,3 +95,22 @@ class ScoreNet(nn.Module):
             using_batchnorm=self.using_batchnorm,
         )(xt, train)
         return score
+
+
+if __name__ == "__main__":
+    net = ScoreNet(
+        out_dim=1,
+        time_embedding_dim=32,
+        encoding_dim=32,
+        act="relu",
+        encoder_layer_dims=[32, 32],
+        decoder_layer_dims=[32, 32],
+    )
+
+    x = jnp.ones((16, 1))
+    t = jnp.ones((16,))
+    params = net.init(jax.random.PRNGKey(0), x, t, train=True)
+    x = jnp.array(1.0)
+    t = jnp.array(1.0)
+    score = net.apply(params, x, t, train=True)
+    print(score.shape)
