@@ -1,15 +1,16 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
+from jax.typing import ArrayLike
 
 
 def get_time_step_embedding(
-    time_steps: jax.Array,
+    time_steps: ArrayLike,
     embedding_dim: int,
     max_period: int = 10000,
     scaling_factor: float = 100.0,
 ) -> jax.Array:
-    def encode_scalar(t: jax.Array) -> jax.Array:
+    def encode_scalar(t: ArrayLike) -> jax.Array:
         k = embedding_dim // 2
         emb = jnp.log(max_period) / (k - 1)
         emb = jnp.exp(jnp.arange(k, dtype=jnp.float32) * -emb)
@@ -17,7 +18,7 @@ def get_time_step_embedding(
         emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
         return emb
 
-    if len(time_steps.shape) == 0:
+    if len(time_steps.shape) == 0 or time_steps.shape[0] == 1:
         return encode_scalar(time_steps)
     else:
         return jax.vmap(encode_scalar)(time_steps)
@@ -99,7 +100,7 @@ class ScoreNet(nn.Module):
 
 if __name__ == "__main__":
     net = ScoreNet(
-        out_dim=1,
+        out_dim=4,
         time_embedding_dim=32,
         encoding_dim=32,
         act="relu",
@@ -107,10 +108,35 @@ if __name__ == "__main__":
         decoder_layer_dims=[32, 32],
     )
 
-    x = jnp.ones((16, 1))
+    x = jnp.ones((16, 4))
     t = jnp.ones((16,))
     params = net.init(jax.random.PRNGKey(0), x, t, train=True)
-    x = jnp.array(1.0)
+    score = net.apply(params, x, t, train=True)
+    print("x.shape: ", x.shape)
+    print("t.shape: ", t.shape)
+    print("score.shape: ", score.shape)
+    print("--" * 10)
+
+    x = jnp.ones((16, 4))
+    t = jnp.ones((16, 1))
+    score = net.apply(params, x, t, train=True)
+    print("x.shape: ", x.shape)
+    print("t.shape: ", t.shape)
+    print("score.shape: ", score.shape)
+    print("--" * 10)
+
+    x = jnp.array([1.0, 1.0, 1.0, 1.0])
     t = jnp.array(1.0)
     score = net.apply(params, x, t, train=True)
-    print(score.shape)
+    print("x.shape: ", x.shape)
+    print("t.shape: ", t.shape)
+    print("score.shape: ", score.shape)
+    print("--" * 10)
+
+    x = jnp.array([1.0, 1.0, 1.0, 1.0])
+    t = jnp.array([1.0])
+    score = net.apply(params, x, t, train=True)
+    print("x.shape: ", x.shape)
+    print("t.shape: ", t.shape)
+    print("score.shape: ", score.shape)
+    print("--" * 10)

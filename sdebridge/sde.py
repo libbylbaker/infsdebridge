@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from .utils import Partial, batch_multi, eval_Q
+from .utils import eval_Q
 
 
 class SDE(abc.ABC):
@@ -97,9 +97,10 @@ class SDE(abc.ABC):
                 inverted_time = self.T - time
                 rev_drift = super().drift(val=val, time=inverted_time, **kwargs)
                 score = score_p_density(val=val, time=inverted_time, **kwargs)
-                score_term = batch_multi(
-                    super().covariance(val=val, time=inverted_time), score
-                )
+
+                _covariance = super().covariance(val=val, time=inverted_time, **kwargs)
+                score_term = jnp.dot(_covariance, score)
+
                 div_term = super().div_covariance(val=val, time=inverted_time)
                 return rev_drift + score_term + div_term
 
@@ -123,7 +124,9 @@ class SDE(abc.ABC):
             def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
                 orig_drift = super().drift(val=val, time=time, **kwargs)
                 score = score_h_density(val=val, time=time, **kwargs)
-                score_term = batch_multi(super().covariance(val=val, time=time), score)
+
+                _covariance = super().covariance(val=val, time=time, **kwargs)
+                score_term = jnp.dot(_covariance, score)
                 return orig_drift + score_term
 
             def diffusion(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
@@ -203,13 +206,13 @@ class QSDE(SDE):
     def T(self) -> float:
         return 1.0
 
-    def drift(self, val: jax.Array, time: float) -> jax.Array:
-        return jnp.zeros_like(val)
+    # def drift(self, val: jax.Array, time: float) -> jax.Array:
+    #     return jnp.zeros_like(val)
+    def drift(self, val: jax.Array, time: ArrayLike) -> jax.Array:
+        return jnp.array([0.0, 1.0, 0.0, 1.0])
 
     def diffusion(self, val: jax.Array, time: float) -> jax.Array:
-        return jax.vmap(eval_Q, in_axes=(0, None, None), out_axes=0)(
-            val, self.alpha, self.sigma
-        )
+        return eval_Q(val, self.alpha, self.sigma)
 
     def score_p_density(self, val: jax.Array, time: float, **kwargs) -> jax.Array:
         return super().score_p_density(val, time, **kwargs)

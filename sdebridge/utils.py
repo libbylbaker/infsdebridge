@@ -31,11 +31,7 @@ def squeeze(x: jax.Array, axis: int):
 
 def batch_batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
     """Perform matrix multiplication for batched matrices."""
-    return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(0, 0), out_axes=0)(a, b)
-
-
-def single_batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
-    """Perform matrix multiplication for batched matrix and single matrix."""
+    assert a.shape[0] == b.shape[0]
     return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(0, 0), out_axes=0)(a, b)
 
 
@@ -69,13 +65,26 @@ def create_train_state(
 
 
 @jax.jit
+def eval_scores(state: TrainState, vals: jax.Array, time: ArrayLike) -> jax.Array:
+    assert len(vals.shape) == 2
+    times = jnp.tile(jnp.array(time), (vals.shape[0], 1))
+    scores = state.apply_fn(
+        {"params": state.params, "batch_stats": state.batch_stats},
+        x=vals,
+        t=times,
+        train=False,
+    )
+    return scores
+
+
+@jax.jit
 def eval_score(state: TrainState, val: jax.Array, time: ArrayLike) -> jax.Array:
-    assert len(val.shape) == 2, f"Invalid shape: {val.shape}"
-    time = jnp.tile(time, (val.shape[0], 1))
+    assert len(val.shape) == 1
+    time = jnp.array(time)
     score = state.apply_fn(
         {"params": state.params, "batch_stats": state.batch_stats},
-        val,
-        time,
+        x=val,
+        t=time,
         train=False,
     )
     return score
@@ -99,12 +108,6 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     return iterable_dataset
 
 
-def get_next_batch(generator: callable, rng: jax.Array):
-    new_rng, _ = jax.random.split(rng)
-    data = next(generator(new_rng))
-    return data, new_rng
-
-
 ### SDE helpers
 @Partial(jax.jit, static_argnames=("sde"))
 def euler_maruyama(
@@ -116,34 +119,46 @@ def euler_maruyama(
     assert terminal_vals.shape[-1] == sde.dim if enforce_terminal_constraint else True
 
     SolverState = namedtuple(
-        "SolverState", ["val", "scaled_stochastic_increment", "step_rng"]
+        "SolverState", ["vals", "scaled_stochastic_increment", "step_rng"]
     )
     init_state = SolverState(
-        val=initial_vals,
+        vals=initial_vals,
         scaled_stochastic_increment=jnp.empty_like(initial_vals),
         step_rng=rng,
     )
 
     def euler_maruyama_step(state: SolverState, time: ArrayLike) -> tuple:
-        """Euler-Maruyama step"""
+        """Euler-Maruyama step, NOTE: all the calculations are over batches"""
         new_rng, _ = jax.random.split(state.step_rng)
-        drift_step = sde.drift(state.val, time) * sde.dt
-        brownian_step = jnp.sqrt(sde.dt) * jax.random.normal(
-            new_rng, shape=state.val.shape
-        )
-        diffusion_step = batch_batch_multi(
-            sde.diffusion(state.val, time), brownian_step
-        )
+        _drift = jax.vmap(sde.drift, in_axes=(0, None))(state.vals, time)  # (B, d)
+        drift_step = _drift * sde.dt
+
+        _brownian = jax.random.normal(new_rng, shape=state.vals.shape)  # (B, d)
+        brownian_step = _brownian * jnp.sqrt(sde.dt)
+
+        _diffusion = jax.vmap(sde.diffusion, in_axes=(0, None))(
+            state.vals, time
+        )  # (B, d, d)
+        diffusion_step = batch_batch_multi(_diffusion, brownian_step)  # (B, d)
+
+        _inv_diffusion = jax.vmap(sde.inv_diffusion, in_axes=(0, None))(
+            state.vals, time
+        )  # (B, d, d)
         scaled_stochastic_increment = (
-            -batch_multi(sde.inv_diffusion(state.val, time), brownian_step) / sde.dt
-        )
-        new_val = state.val + drift_step + diffusion_step
+            -batch_batch_multi(_inv_diffusion, brownian_step) / sde.dt
+        )  # (B, d)
+
+        new_vals = state.vals + drift_step + diffusion_step  # (B, d)
         new_state = SolverState(
-            val=new_val,
+            vals=new_vals,
             scaled_stochastic_increment=scaled_stochastic_increment,
             step_rng=new_rng,
         )
-        return new_state, (state.val, state.scaled_stochastic_increment, state.step_rng)
+        return new_state, (
+            state.vals,
+            state.scaled_stochastic_increment,
+            state.step_rng,
+        )
 
     _, (trajectories, scaled_stochastic_increments, step_rngs) = jax.lax.scan(
         euler_maruyama_step, init=init_state, xs=(sde.ts[:-1])
@@ -336,6 +351,15 @@ def sample_circle(num_points: int, scale: float, shifts: jax.Array) -> jax.Array
     theta = jnp.linspace(0, 2 * jnp.pi, num_points, endpoint=False)
     x = jnp.cos(theta)
     y = jnp.sin(theta)
+    return (scale * jnp.stack([x, y], axis=1) + shifts).flatten()
+
+
+def sample_ellipse(
+    num_points: int, scale: float, shifts: jax.Array, a: float, b: float
+) -> jax.Array:
+    theta = jnp.linspace(0, 2 * jnp.pi, num_points, endpoint=False)
+    x = a * jnp.cos(theta)
+    y = b * jnp.sin(theta)
     return (scale * jnp.stack([x, y], axis=1) + shifts).flatten()
 
 
