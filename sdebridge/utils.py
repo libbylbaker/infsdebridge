@@ -189,12 +189,8 @@ def normal_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
 
 
 def Q_kernel(distance: jax.Array, alpha: float, sigma: float) -> jax.Array:
-    return (
-        0.5
-        * (alpha**2)
-        * (sigma**2)
-        * jnp.pi
-        * jnp.exp(-0.5 * jnp.sum(jnp.square(distance), axis=-1) / (sigma**2))
+    return (alpha**2) * jnp.exp(
+        -0.5 * jnp.sum(jnp.square(distance), axis=-1) / (sigma**2)
     )
 
 

@@ -61,7 +61,7 @@ class DiffusionBridge:
         initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
         terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1))
 
-        reverse_sde = self.sde.reverse_sde(score_p_density=score_p)
+        reverse_sde = self.sde.reverse_sde(score_p=score_p)
         results = euler_maruyama(
             sde=reverse_sde,
             initial_vals=terminal_vals,  # NOTE: since here the reverse bridge is simulated, we need to swap the initial and terminal values.
@@ -96,7 +96,7 @@ class DiffusionBridge:
         initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
         terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1))
 
-        bridge_sde = self.sde.bridge_sde(score_h_density=score_h)
+        bridge_sde = self.sde.bridge_sde(score_h=score_h)
         results = euler_maruyama(
             sde=bridge_sde,
             initial_vals=initial_vals,
@@ -152,12 +152,10 @@ class DiffusionBridge:
     def learn_p_score(
         self,
         initial_val: jax.Array,
-        reduce_mean: bool = True,
         setup_params: dict = None,
-        loss_calibration: bool = False,
+        reduce_mean: bool = True,
         weighted_norm: bool = True,
         rng: jax.Array = None,
-        **kwargs,
     ) -> TrainState:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
@@ -201,15 +199,6 @@ class DiffusionBridge:
             score_p_gradients = flatten_batch(score_p_gradients)  # (B*N, d)
             trajectories = flatten_batch(trajectories)  # (B*N, d)
             covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, d, d)
-            if loss_calibration:
-                score_p_density = partial(
-                    self.sde.score_p_density,
-                    init_val=jnp.tile(
-                        initial_val, reps=(trajectories.shape[0], 1)
-                    ),  # todo: change here to fit the num_batches arguments
-                    term_val=None,
-                )
-                true_p_scores = score_p_density(trajectories, ts)  # (B*N, d)
 
             def loss_fn(params) -> tuple:
                 score_p_est, updates = state.apply_fn(
@@ -222,12 +211,7 @@ class DiffusionBridge:
                 loss = norm_operation(
                     x=score_p_est - score_p_gradients, weight=covariances
                 )
-                if loss_calibration:
-                    loss_cal1 = norm_operation(x=true_p_scores, weight=covariances)
-                    loss_cal2 = norm_operation(x=score_p_gradients, weight=covariances)
-                    loss = reduce_operation(loss + loss_cal1 - loss_cal2)
-                else:
-                    loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
+                loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
@@ -272,10 +256,9 @@ class DiffusionBridge:
         initial_val: jax.Array,
         terminal_val: jax.Array,
         score_p: callable,
-        reduce_mean: bool = True,
         setup_params: dict = None,
+        reduce_mean: bool = True,
         weighted_norm: bool = True,
-        loss_calibration: bool = False,
         rng: jax.Array = None,
     ) -> TrainState:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
@@ -326,22 +309,6 @@ class DiffusionBridge:
             covariances = jax.vmap(self.sde.covariance, in_axes=(0, None))(
                 trajectories, ts
             )  # (B*N, d, d)
-            if loss_calibration:  # todo: change here to fit the num_batches arguments
-                score_h_density = partial(
-                    self.sde.score_h_density,
-                    init_val=None,
-                    term_val=jnp.tile(terminal_val, reps=(trajectories.shape[0], 1)),
-                )
-                score_p_density = partial(
-                    self.sde.score_p_density,
-                    init_val=jnp.tile(initial_val, reps=(trajectories.shape[0], 1)),
-                    term_val=None,
-                )
-                true_p_star_scores = score_p_density(
-                    trajectories, ts
-                ) + score_h_density(
-                    trajectories, ts
-                )  # (B*N, d)
 
             def loss_fn(params) -> tuple:
                 score_p_star_est, updates = state.apply_fn(
@@ -354,14 +321,7 @@ class DiffusionBridge:
                 loss = norm_operation(
                     x=score_p_star_est - score_p_star_gradients, weight=covariances
                 )
-                if loss_calibration:
-                    loss_cal1 = norm_operation(x=true_p_star_scores, weight=covariances)
-                    loss_cal2 = norm_operation(
-                        x=score_p_star_gradients, weight=covariances
-                    )
-                    loss = reduce_operation(loss + loss_cal1 - loss_cal2)
-                else:
-                    loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
+                loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 

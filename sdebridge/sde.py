@@ -73,19 +73,19 @@ class SDE(abc.ABC):
         return jnp.trace(_jacobian_covariance)
 
     @abc.abstractmethod
-    def score_p_density(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
+    def score_p(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
         """score of the transition density"""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def score_h_density(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
+    def score_h(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
         """score of Doob's h-transform density, used for simulating the bridge directly"""
         raise NotImplementedError
 
-    def reverse_sde(self, score_p_density: callable):
+    def reverse_sde(self, score_p: callable = None):
         """Time-invert the SDE using either pre-assigned score p or neural network approximation"""
-        if score_p_density is None:
-            score_p_density = self.score_p_density
+        if score_p is None:
+            score_p = self.score_p
 
         sde_params = self.params
 
@@ -96,12 +96,12 @@ class SDE(abc.ABC):
             def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
                 inverted_time = self.T - time
                 rev_drift = super().drift(val=val, time=inverted_time, **kwargs)
-                score = score_p_density(val=val, time=inverted_time, **kwargs)
+                _score_p = score_p(val=val, time=inverted_time, **kwargs)
 
                 _covariance = super().covariance(val=val, time=inverted_time, **kwargs)
-                score_term = jnp.dot(_covariance, score)
+                score_term = jnp.dot(_covariance, _score_p)
 
-                div_term = super().div_covariance(val=val, time=inverted_time)
+                div_term = super().div_covariance(val=val, time=inverted_time, **kwargs)
                 return rev_drift + score_term + div_term
 
             def diffusion(self, val: ArrayLike, time: ArrayLike) -> jax.Array:
@@ -110,10 +110,10 @@ class SDE(abc.ABC):
 
         return ReverseSDE()
 
-    def bridge_sde(self, score_h_density: callable):
+    def bridge_sde(self, score_h: callable = None):
         """Bridge the SDE using either pre-assigned score h or neural network approximation"""
-        if score_h_density is None:
-            score_h_density = self.score_h_density
+        if score_h is None:
+            score_h = self.score_h
 
         sde_params = self.params
 
@@ -123,10 +123,10 @@ class SDE(abc.ABC):
 
             def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
                 orig_drift = super().drift(val=val, time=time, **kwargs)
-                score = score_h_density(val=val, time=time, **kwargs)
+                _score_h = score_h(val=val, time=time, **kwargs)
 
                 _covariance = super().covariance(val=val, time=time, **kwargs)
-                score_term = jnp.dot(_covariance, score)
+                score_term = jnp.dot(_covariance, _score_h)
                 return orig_drift + score_term
 
             def diffusion(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jax.Array:
@@ -149,13 +149,13 @@ class BrownianSDE(SDE):
     def diffusion(self, val: ArrayLike, time: ArrayLike) -> jax.Array:
         return jnp.eye(self.dim)
 
-    def score_p_density(
+    def score_p(
         self, val: ArrayLike, time: ArrayLike, init_val: ArrayLike, term_val: ArrayLike
     ) -> jax.Array:
         assert val.shape == init_val.shape
         return -(val - init_val) / (time + 1e-4)
 
-    def score_h_density(
+    def score_h(
         self, val: ArrayLike, time: ArrayLike, init_val: ArrayLike, term_val: ArrayLike
     ) -> jax.Array:
         assert val.shape == term_val.shape
@@ -176,17 +176,17 @@ class Fixed_QSDE(SDE):
     def T(self) -> float:
         return 1.0
 
-    def drift(self, val: jax.Array, time: float) -> jax.Array:
+    def drift(self, val: jax.Array, time: ArrayLike) -> jax.Array:
         return jnp.zeros_like(val)
 
-    def diffusion(self, val: jax.Array, time: float) -> jax.Array:
+    def diffusion(self, val: jax.Array, time: ArrayLike) -> jax.Array:
         return self.Q
 
-    def score_p_density(self, val: jax.Array, time: float, **kwargs) -> jax.Array:
-        return super().score_p_density(val, time, **kwargs)
+    def score_p(self, val: jax.Array, time: ArrayLike, **kwargs) -> jax.Array:
+        return super().score_p(val, time, **kwargs)
 
-    def score_h_density(self, val: jax.Array, time: float, **kwargs) -> jax.Array:
-        return super().score_h_density(val, time, **kwargs)
+    def score_h(self, val: jax.Array, time: ArrayLike, **kwargs) -> jax.Array:
+        return super().score_h(val, time, **kwargs)
 
 
 class QSDE(SDE):
@@ -206,16 +206,14 @@ class QSDE(SDE):
     def T(self) -> float:
         return 1.0
 
-    # def drift(self, val: jax.Array, time: float) -> jax.Array:
-    #     return jnp.zeros_like(val)
     def drift(self, val: jax.Array, time: ArrayLike) -> jax.Array:
-        return jnp.array([0.0, 1.0, 0.0, 1.0])
+        return jnp.zeros_like(val)
 
-    def diffusion(self, val: jax.Array, time: float) -> jax.Array:
+    def diffusion(self, val: jax.Array, time: ArrayLike) -> jax.Array:
         return eval_Q(val, self.alpha, self.sigma)
 
-    def score_p_density(self, val: jax.Array, time: float, **kwargs) -> jax.Array:
-        return super().score_p_density(val, time, **kwargs)
+    def score_p(self, val: jax.Array, time: ArrayLike, **kwargs) -> jax.Array:
+        return super().score_p(val, time, **kwargs)
 
-    def score_h_density(self, val: jax.Array, time: float, **kwargs) -> jax.Array:
-        return super().score_h_density(val, time, **kwargs)
+    def score_h(self, val: jax.Array, time: ArrayLike, **kwargs) -> jax.Array:
+        return super().score_h(val, time, **kwargs)
