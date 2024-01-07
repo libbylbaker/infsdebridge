@@ -9,8 +9,8 @@ def get_time_step_embedding(
     embedding_dim: int,
     max_period: int = 10000,
     scaling_factor: float = 100.0,
-) -> jax.Array:
-    def encode_scalar(t: ArrayLike) -> jax.Array:
+) -> jnp.ndarray:
+    def encode_scalar(t: ArrayLike) -> jnp.ndarray:
         k = embedding_dim // 2
         emb = jnp.log(max_period) / (k - 1)
         emb = jnp.exp(jnp.arange(k, dtype=jnp.float32) * -emb)
@@ -49,7 +49,7 @@ class MLP(nn.Module):
     using_batchnorm: bool = True
 
     @nn.compact
-    def __call__(self, x: jax.Array, train: bool) -> jax.Array:
+    def __call__(self, x: jnp.ndarray, train: bool) -> jnp.ndarray:
         for dim in self.layer_dims:
             x = get_activation(self.act)(nn.Dense(dim)(x))
             if self.using_batchnorm:
@@ -71,7 +71,7 @@ class ScoreNet(nn.Module):
     using_batchnorm: bool = False
 
     @nn.compact
-    def __call__(self, x: jax.Array, t: jax.Array, train: bool) -> jax.Array:
+    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
         t = get_time_step_embedding(t, self.time_embedding_dim)
         t = MLP(
             out_dim=self.encoding_dim,
@@ -108,8 +108,8 @@ if __name__ == "__main__":
         decoder_layer_dims=[32, 32],
     )
 
-    x = jnp.ones((16, 4))
-    t = jnp.ones((16,))
+    x = jnp.ones((4,))
+    t = jnp.ones((1,))
     params = net.init(jax.random.PRNGKey(0), x, t, train=True)
     score = net.apply(params, x, t, train=True)
     print("x.shape: ", x.shape)

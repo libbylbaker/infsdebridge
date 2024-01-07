@@ -1,12 +1,10 @@
-from functools import partial
-
-import jax
-import jax.numpy as jnp
 import tensorflow as tf
 from tqdm import tqdm
 
 from .networks import ScoreNet
 from .sde import SDE
+from .setup import *
+from .solver import euler_maruyama
 from .utils import *
 
 
@@ -15,13 +13,13 @@ class DiffusionBridge:
         self.sde = sde
 
     def simulate_forward_process(
-        self, initial_val: jax.Array, rng: jax.Array = None, num_batches: int = 1
+        self, initial_val: jnp.ndarray, rng_key: jax.Array = None, num_batches: int = 1
     ) -> dict:
         """Simulate the forward non-bridge process (X(t)):
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
 
         Args:
-            initial_condition (jax.Array): X(0)
+            initial_condition (jnp.ndarray): X(0)
             rng (jax.Array): random number generator
             num_batches (int): number of batches to simulate
 
@@ -31,16 +29,18 @@ class DiffusionBridge:
                             "step_rngs": jax.Array, (B, N) random number generators}
         """
         initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
-        results = euler_maruyama(sde=self.sde, initial_vals=initial_vals, rng=rng)
+        results = euler_maruyama(
+            sde=self.sde, initial_vals=initial_vals, terminal_vals=None, rng_key=rng_key
+        )
         return results
 
     @Partial(jax.jit, static_argnames=("self", "num_batches"))
     def simulate_backward_bridge(
         self,
-        initial_val: jax.Array,
-        terminal_val: jax.Array,
+        initial_val: jnp.ndarray,
+        terminal_val: jnp.ndarray,
         score_p: callable = None,
-        rng: jax.Array = None,
+        rng_key: jax.Array = None,
         num_batches: int = 1,
     ) -> dict:
         """Simulate the backward bridge process (Z*(t)):
@@ -66,17 +66,17 @@ class DiffusionBridge:
             sde=reverse_sde,
             initial_vals=terminal_vals,  # NOTE: since here the reverse bridge is simulated, we need to swap the initial and terminal values.
             terminal_vals=initial_vals,
-            rng=rng,
+            rng_key=rng_key,
         )
         return results
 
     @Partial(jax.jit, static_argnames=("self", "num_batches"))
     def simulate_forward_bridge(
         self,
-        initial_val: jax.Array,
-        terminal_val: jax.Array,
+        initial_val: jnp.ndarray,
+        terminal_val: jnp.ndarray,
         score_h: callable = None,
-        rng: jax.Array = None,
+        rng_key: jax.Array = None,
         num_batches: int = 1,
     ) -> dict:
         """Simulate the forward bridge process (X*(t)) which is the "backward of backward":
@@ -101,7 +101,7 @@ class DiffusionBridge:
             sde=bridge_sde,
             initial_vals=initial_vals,
             terminal_vals=terminal_vals,
-            rng=rng,
+            rng_key=rng_key,
         )
         return results
 
@@ -113,25 +113,25 @@ class DiffusionBridge:
         terminal_val: jax.Array,
         score_p: callable = None,
         score_h: callable = None,
-        rng: jax.Array = None,
+        rng_key: jax.Array = None,
     ) -> callable:
         assert process_type in ["forward", "backward_bridge", "forward_bridge"]
         assert initial_val.shape[-1] == self.sde.dim
 
         def generator():
-            local_rng = rng  # Assign rng to a local variable
+            nonlocal rng_key
             while True:
-                step_rng, local_rng = jax.random.split(local_rng)  # Update local_rng
+                step_rng_key, rng_key = jax.random.split(rng_key)
                 if process_type == "forward":
                     histories = self.simulate_forward_process(
-                        initial_val, rng=step_rng, num_batches=batch_size
+                        initial_val, rng_key=step_rng_key, num_batches=batch_size
                     )
                 elif process_type == "backward_bridge":
                     histories = self.simulate_backward_bridge(
                         initial_val,
                         terminal_val,
                         score_p=score_p,
-                        rng=step_rng,
+                        rng_key=step_rng_key,
                         num_batches=batch_size,
                     )
                 elif process_type == "forward_bridge":
@@ -139,7 +139,7 @@ class DiffusionBridge:
                         initial_val,
                         terminal_val,
                         score_h=score_h,
-                        rng=step_rng,
+                        rng_key=step_rng_key,
                         num_batches=batch_size,
                     )
                 yield (
@@ -153,9 +153,7 @@ class DiffusionBridge:
         self,
         initial_val: jax.Array,
         setup_params: dict = None,
-        reduce_mean: bool = True,
-        weighted_norm: bool = True,
-        rng: jax.Array = None,
+        rng_key: jax.Array = None,
     ) -> TrainState:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
@@ -168,7 +166,7 @@ class DiffusionBridge:
             terminal_val=None,
             score_p=None,
             score_h=None,
-            rng=rng,
+            rng_key=rng_key,
         )
 
         iter_dataset = get_iterable_dataset(
@@ -179,12 +177,6 @@ class DiffusionBridge:
                 (training_params["batch_size"], self.sde.N, self.sde.dim),
             ],
         )
-        reduce_operation = (
-            jax.vmap(jnp.mean, in_axes=-1)
-            if reduce_mean
-            else jax.vmap(0.5 * jnp.sum, in_axes=-1)
-        )
-        norm_operation = weighted_norm_square if weighted_norm else normal_norm_square
 
         @jax.jit
         def train_step(state: TrainState, batch: tuple) -> TrainState:
@@ -208,10 +200,10 @@ class DiffusionBridge:
                     train=True,
                     mutable=["batch_stats"],
                 )  # (B*N, d)
-                loss = norm_operation(
+                # print(jnp.linalg.norm(score_p_gradients))
+                loss = weighted_norm_square(
                     x=score_p_est - score_p_gradients, weight=covariances
-                )
-                loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
+                )  # (B*N, d) -> (B*N, )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
@@ -225,10 +217,10 @@ class DiffusionBridge:
             state = state.replace(metrics=metrics)
             return state
 
-        network_rng, _ = jax.random.split(rng)
+        network_rng_key, _ = jax.random.split(rng_key)
         state = create_train_state(
             score_p_net,
-            network_rng,
+            network_rng_key,
             training_params["learning_rate"],
             [
                 (training_params["batch_size"], self.sde.dim),
@@ -257,9 +249,7 @@ class DiffusionBridge:
         terminal_val: jax.Array,
         score_p: callable,
         setup_params: dict = None,
-        reduce_mean: bool = True,
-        weighted_norm: bool = True,
-        rng: jax.Array = None,
+        rng_key: jax.Array = None,
     ) -> TrainState:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
@@ -273,7 +263,7 @@ class DiffusionBridge:
             terminal_val=terminal_val,
             score_p=score_p,
             score_h=None,
-            rng=rng,
+            rng_key=rng_key,
         )
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
@@ -283,13 +273,6 @@ class DiffusionBridge:
                 (training_params["batch_size"], self.sde.N, self.sde.dim),
             ],
         )
-        reduce_operation = (
-            jax.vmap(jnp.mean, in_axes=-1)
-            if reduce_mean
-            else jax.vmap(0.5 * jnp.sum, in_axes=-1)
-        )
-
-        norm_operation = weighted_norm_square if weighted_norm else normal_norm_square
 
         @jax.jit
         def train_step(state: TrainState, batch: tuple) -> TrainState:
@@ -318,10 +301,9 @@ class DiffusionBridge:
                     train=True,
                     mutable=["batch_stats"],
                 )  # (B*N, d)
-                loss = norm_operation(
+                loss = weighted_norm_square(
                     x=score_p_star_est - score_p_star_gradients, weight=covariances
-                )
-                loss = reduce_operation(loss)  # (B*N, d) -> (B*N, )
+                )  # (B*N, d) -> (B*N, )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
@@ -335,10 +317,10 @@ class DiffusionBridge:
             state = state.replace(metrics=metrics)
             return state
 
-        network_rng, _ = jax.random.split(rng)
+        network_rng_key, _ = jax.random.split(rng_key)
         state = create_train_state(
             score_p_star_net,
-            network_rng,
+            network_rng_key,
             training_params["learning_rate"],
             [
                 (training_params["batch_size"], self.sde.dim),

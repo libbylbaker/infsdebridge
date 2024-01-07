@@ -25,16 +25,6 @@ def unsqueeze(x: jax.Array, axis: int):
     return jnp.expand_dims(x, axis=axis)
 
 
-def squeeze(x: jax.Array, axis: int):
-    return jnp.squeeze(x, axis=axis)
-
-
-def batch_batch_multi(a: jax.Array, b: jax.Array) -> jax.Array:
-    """Perform matrix multiplication for batched matrices."""
-    assert a.shape[0] == b.shape[0]
-    return jax.vmap(lambda x, y: jnp.dot(x, y), in_axes=(0, 0), out_axes=0)(a, b)
-
-
 ### Network helpers
 @struct.dataclass
 class Metrics(metrics.Collection):
@@ -47,10 +37,10 @@ class TrainState(train_state.TrainState):
 
 
 def create_train_state(
-    module: nn.Module, rng: jax.Array, learning_rate: float, input_shapes: list
+    module: nn.Module, rng_key: jax.Array, learning_rate: float, input_shapes: list
 ) -> TrainState:
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
-    variables = module.init(rng, *init_inputs, train=False)
+    variables = module.init(rng_key, *init_inputs, train=False)
     params = variables["params"]
     batch_stats = variables["batch_stats"] if "batch_stats" in variables else {}
 
@@ -108,84 +98,12 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     return iterable_dataset
 
 
-### SDE helpers
-@Partial(jax.jit, static_argnames=("sde"))
-def euler_maruyama(
-    sde, initial_vals: jax.Array, rng: jax.Array, terminal_vals: jax.Array = None
-) -> dict:
-    """Euler-Maruyama solver for SDEs"""
-    enforce_terminal_constraint = terminal_vals is not None
-    assert initial_vals.shape[-1] == sde.dim
-    assert terminal_vals.shape[-1] == sde.dim if enforce_terminal_constraint else True
-
-    SolverState = namedtuple(
-        "SolverState", ["vals", "scaled_stochastic_increment", "step_rng"]
-    )
-    init_state = SolverState(
-        vals=initial_vals,
-        scaled_stochastic_increment=jnp.empty_like(initial_vals),
-        step_rng=rng,
-    )
-
-    def euler_maruyama_step(state: SolverState, time: ArrayLike) -> tuple:
-        """Euler-Maruyama step, NOTE: all the calculations are over batches"""
-        new_rng, _ = jax.random.split(state.step_rng)
-        _drift = jax.vmap(sde.drift, in_axes=(0, None))(state.vals, time)  # (B, d)
-        drift_step = _drift * sde.dt
-
-        _brownian = jax.random.normal(new_rng, shape=state.vals.shape)  # (B, d)
-        brownian_step = _brownian * jnp.sqrt(sde.dt)
-
-        _diffusion = jax.vmap(sde.diffusion, in_axes=(0, None))(
-            state.vals, time
-        )  # (B, d, d)
-        diffusion_step = batch_batch_multi(_diffusion, brownian_step)  # (B, d)
-
-        _inv_diffusion = jax.vmap(sde.inv_diffusion, in_axes=(0, None))(
-            state.vals, time
-        )  # (B, d, d)
-        scaled_stochastic_increment = (
-            -batch_batch_multi(_inv_diffusion, brownian_step) / sde.dt
-        )  # (B, d)
-
-        new_vals = state.vals + drift_step + diffusion_step  # (B, d)
-        new_state = SolverState(
-            vals=new_vals,
-            scaled_stochastic_increment=scaled_stochastic_increment,
-            step_rng=new_rng,
-        )
-        return new_state, (
-            state.vals,
-            state.scaled_stochastic_increment,
-            state.step_rng,
-        )
-
-    _, (trajectories, scaled_stochastic_increments, step_rngs) = jax.lax.scan(
-        euler_maruyama_step, init=init_state, xs=(sde.ts[:-1])
-    )
-
-    if enforce_terminal_constraint:
-        trajectories = trajectories.at[-1].set(terminal_vals)
-    return {
-        "trajectories": jnp.swapaxes(trajectories, 0, 1),
-        "scaled_stochastic_increments": jnp.swapaxes(
-            scaled_stochastic_increments, 0, 1
-        ),
-        "step_rngs": step_rngs,
-    }
-
-
 @jax.vmap
 def weighted_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
     assert x.shape[0] == weight.shape[0]
     Wx = jnp.dot(weight, x)
     xWx = jnp.dot(x, Wx)
     return xWx
-
-
-@jax.vmap
-def normal_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
-    return jnp.square(x)
 
 
 def Q_kernel(distance: jax.Array, alpha: float, sigma: float) -> jax.Array:
@@ -204,142 +122,6 @@ def eval_Q(
     Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
     Q = Q.reshape(2 * dim, 2 * dim)
     return Q
-
-
-### Plotting helpers
-def plot_2d_vector_field(
-    X: callable,
-    X_ref: callable,
-    xs: jax.Array,
-    ts: jax.Array,
-    suptitle: str,
-    scale: float = None,
-    **kwargs,
-):
-    xm, ym = jnp.meshgrid(xs, xs)
-    x = jnp.stack([xm.flatten(), ym.flatten()], axis=-1)
-    fig, ax = plt.subplots(1, len(ts), figsize=(4 * len(ts), 4))
-    X_ref = partial(X_ref, **kwargs) if X_ref is not None else None
-    for i, t in enumerate(ts):
-        vector_field = X(x, t) if X is not None else None
-        vector_field_ref = X_ref(x, t) if X_ref is not None else None
-        if vector_field is not None:
-            u = vector_field[:, 0].reshape(xm.shape)
-            v = vector_field[:, 1].reshape(xm.shape)
-            ax[i].quiver(xm, ym, u, v, color="b", scale=scale)
-
-        if vector_field_ref is not None:
-            u_ref = vector_field_ref[:, 0].reshape(xm.shape)
-            v_ref = vector_field_ref[:, 1].reshape(xm.shape)
-            ax[i].quiver(xm, ym, u_ref, v_ref, color="r", scale=scale)
-
-        ax[i].set_title(f"t = {t:.1f}")
-    fig.suptitle(suptitle)
-    plt.show()
-
-
-def plot_2d_trajectories(trajectories: jax.Array, title: str, **kwargs):
-    colormap = plt.cm.get_cmap("spring")
-    num_trajectories = trajectories.shape[0]
-    colors = [colormap(i) for i in jnp.linspace(0, 1, num_trajectories)]
-    for i in range(num_trajectories):
-        plt.plot(
-            trajectories[i, :, 0],
-            trajectories[i, :, 1],
-            color=colors[i],
-            zorder=1,
-            alpha=0.5,
-            **kwargs,
-        )
-        plt.scatter(
-            trajectories[i, 1, 0],
-            trajectories[i, 1, 1],
-            color="b",
-            marker="o",
-            edgecolors="k",
-            zorder=2,
-        )
-        plt.scatter(
-            trajectories[i, -2, 0],
-            trajectories[i, -2, 1],
-            color="c",
-            marker="D",
-            edgecolors="k",
-            zorder=2,
-        )
-    plt.title(title)
-
-
-def plot_trajectories(trajectories: jax.Array, title: str, **kwargs):
-    colormap = plt.cm.get_cmap("spring")
-    assert len(trajectories.shape) == 3
-    num_trajectories = trajectories.shape[0]
-    dim = trajectories.shape[2]
-    colors = [colormap(i) for i in jnp.linspace(0, 1, num_trajectories)]
-    plt.figure(figsize=(8, 8))
-    for i in range(num_trajectories):
-        for j in range(dim // 2):
-            plt.plot(
-                trajectories[i, :, 2 * j],
-                trajectories[i, :, 2 * j + 1],
-                color=colors[i],
-                zorder=1,
-                alpha=0.2,
-                **kwargs,
-            )
-            plt.scatter(
-                trajectories[i, 0, 2 * j],
-                trajectories[i, 0, 2 * j + 1],
-                color="b",
-                marker="o",
-                edgecolors="k",
-                zorder=2,
-            )
-            plt.scatter(
-                trajectories[i, -1, 2 * j],
-                trajectories[i, -1, 2 * j + 1],
-                color=colors[i],
-                marker="D",
-                edgecolors="k",
-                zorder=2,
-            )
-    plt.axis("equal")
-    plt.title(title)
-
-
-def plot_single_trajectory(trajectory: jax.Array, title: str, **kwargs):
-    colormap = plt.cm.get_cmap("jet")
-    assert len(trajectory.shape) == 2
-    dim = trajectory.shape[-1]
-    colors = [colormap(i) for i in jnp.linspace(0, 1, dim // 2)]
-    plt.figure(figsize=(8, 8))
-    for i in range(dim // 2):
-        plt.plot(
-            trajectory[:, 2 * i],
-            trajectory[:, 2 * i + 1],
-            color=colors[i],
-            zorder=1,
-            alpha=0.5,
-            **kwargs,
-        )
-        plt.scatter(
-            trajectory[0, 2 * i],
-            trajectory[0, 2 * i + 1],
-            color=colors[i],
-            marker="o",
-            edgecolors="k",
-            zorder=2,
-        )
-        plt.scatter(
-            trajectory[-1, 2 * i],
-            trajectory[-1, 2 * i + 1],
-            color=colors[i],
-            marker="D",
-            edgecolors="k",
-            zorder=2,
-        )
-    plt.axis("equal")
-    plt.title(title)
 
 
 ### Data helpers
