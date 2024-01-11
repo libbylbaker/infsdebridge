@@ -25,6 +25,15 @@ def unsqueeze(x: jax.Array, axis: int):
     return jnp.expand_dims(x, axis=axis)
 
 
+def sparseify(x: jnp.ndarray, num_adjacent_nbs: int):
+    x_copy = x.copy()
+    for n in range(num_adjacent_nbs + 1, len(x) - num_adjacent_nbs):
+        # Set the elements at the diagonal `n` away from the main diagonal to zero
+        x_copy -= jnp.diagflat(jnp.diag(x_copy, k=n), k=n)
+        x_copy -= jnp.diagflat(jnp.diag(x_copy, k=-n), k=-n)
+    return x_copy
+
+
 ### Network helpers
 @struct.dataclass
 class Metrics(metrics.Collection):

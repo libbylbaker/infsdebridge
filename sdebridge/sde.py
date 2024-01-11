@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from .utils import eval_Q
+from .utils import eval_Q, sparseify
 
 
 class SDE(abc.ABC):
@@ -55,12 +55,16 @@ class SDE(abc.ABC):
     def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """covariance term: \sigma @ \sigma^T"""
         _diffusion = self.diffusion(val, time, **kwargs)
+        _diffusion = sparseify(_diffusion, num_adjacent_nbs=1 * 2)
         return jnp.dot(_diffusion, _diffusion.T)
 
     def inv_covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """inverse covariance term: (\sigma @ \sigma^T)^{-1}"""
         _covariance = self.covariance(val, time, **kwargs)
-        return jnp.linalg.lstsq(_covariance, jnp.eye(self.dim), rcond=None)[0]
+        # _covariance = sparseify(_covariance, num_adjacent_nbs=1*2)
+        # return jnp.linalg.lstsq(_covariance, jnp.eye(self.dim), rcond=None)[0]
+        return jnp.linalg.pinv(_covariance, hermitian=True, rcond=None)
+        # return jnp.linalg.lstsq(_covariance, kwargs["sigma_dw"], rcond=1e-4)[0]
 
     def div_covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """divergence of covariance term: \nabla_x (\sigma @ \sigma^T)"""

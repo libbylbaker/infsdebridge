@@ -200,7 +200,6 @@ class DiffusionBridge:
                     train=True,
                     mutable=["batch_stats"],
                 )  # (B*N, d)
-                # print(jnp.linalg.norm(score_p_gradients))
                 loss = weighted_norm_square(
                     x=score_p_est - score_p_gradients, weight=covariances
                 )  # (B*N, d) -> (B*N, )

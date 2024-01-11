@@ -49,10 +49,13 @@ def euler_maruyama(
         _inv_covariance = vmap(sde.inv_covariance, in_axes=(0, None))(
             state.vals, time
         )  # (B, d, d)
+        # _inv_covariance = jnp.tile(jnp.eye(sde.dim), reps=(state.vals.shape[0], 1, 1))
 
         scaled_stochastic_increment = (
             -batch_multi(_inv_covariance, diffusion_step) / sde.dt
         )  # (B, d)
+        # _covariance = vmap(sde.covariance, in_axes=(0, None))(state.vals, time)
+        # scaled_stochastic_increment = vmap(jnp.linalg.lstsq, in_axes=(0, 0))(_covariance, diffusion_step)[0]
 
         new_vals = state.vals + drift_step + diffusion_step  # (B, d)
         new_state = SolverState(
