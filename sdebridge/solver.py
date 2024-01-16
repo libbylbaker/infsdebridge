@@ -16,7 +16,7 @@ def euler_maruyama(
     sde: SDE,
     initial_vals: jnp.ndarray,
     terminal_vals: jnp.ndarray,
-    rng_key: jax.Array = random.PRNGKey(0),
+    rng_key: jax.Array = GDRK,
 ) -> dict:
     """Euler-Maruyama solver for SDEs"""
     enforce_terminal_constraint = terminal_vals is not None
@@ -83,5 +83,5 @@ def euler_maruyama(
         "scaled_stochastic_increments": jnp.swapaxes(
             scaled_stochastic_increments, 0, 1
         ),
-        "step_keys": step_keys,
+        "last_key": step_keys[-1],
     }

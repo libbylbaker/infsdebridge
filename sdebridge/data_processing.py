@@ -1,7 +1,20 @@
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.spatial
+from scipy import spatial
+
+
+def sample_ellipse(
+    num_points: int,
+    scale: float = 1.0,
+    shifts: np.ndarray = np.array([0.0, 0.0]),
+    a: float = 1.0,
+    b: float = 1.0,
+) -> np.ndarray:
+    theta = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+    x = a * np.cos(theta)
+    y = b * np.sin(theta)
+    return (scale * np.stack([x, y], axis=1) + shifts).flatten()
 
 
 def order_points(unordered_points):
@@ -9,7 +22,7 @@ def order_points(unordered_points):
     p0 = points_for_waste[0, :].copy()
     points = [p0]
     for _ in range(len(unordered_points)):
-        Midx = scipy.spatial.distance_matrix(p0[None, :], points_for_waste)
+        Midx = spatial.distance_matrix(p0[None, :], points_for_waste)
         Midx[Midx == 0.0] = 100
         idx = np.argmin(Midx)
         p0 = points_for_waste[idx, :].copy()

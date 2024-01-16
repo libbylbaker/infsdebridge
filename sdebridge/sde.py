@@ -1,19 +1,90 @@
 import abc
 
-import jax
-import jax.numpy as jnp
-from jax.typing import ArrayLike
+from jax.numpy import ndarray
 
-from .utils import eval_Q, sparseify
+from sdebridge.setup import ArrayLike
+
+from .setup import *
+
+
+### Kernels ###
+def gaussian_kernel(d: jnp.ndarray, alpha: float, sigma: float) -> jnp.ndarray:
+    d = jnp.sqrt(jnp.sum(jnp.square(d), axis=-1))
+    return alpha * jnp.exp(-0.5 * d**2 / sigma**2)
+
+
+def gaussian_Q_half_kernel(
+    landmarks: jnp.ndarray, alpha: float, sigma: float
+) -> jnp.ndarray:
+    xy_coords = landmarks.reshape(-1, 2)
+    num_landmarks = xy_coords.shape[0]
+    diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
+    dis = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1))
+    kernel = alpha * jnp.exp(-(dis**2) / sigma**2)
+    Q_half = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
+    Q_half = Q_half.reshape(2 * num_landmarks, 2 * num_landmarks)
+    return Q_half
+
+
+def gaussian_Q_kernel(
+    landmarks: jnp.ndarray, alpha: float, sigma: float
+) -> jnp.ndarray:
+    xy_coords = landmarks.reshape(-1, 2)
+    num_landmarks = xy_coords.shape[0]
+    diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
+    dis = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1))
+    kernel = (
+        0.5
+        * (alpha**4)
+        * (sigma**2)
+        * jnp.pi
+        * jnp.exp(-0.5 * dis**2 / sigma**2)
+    )
+    Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
+    Q = Q.reshape(2 * num_landmarks, 2 * num_landmarks)
+    return Q
+
+
+def matern_kernel(d: jnp.ndarray, sigma: float, rho: float, p: int = 2) -> jnp.ndarray:
+    d = jnp.sqrt(jnp.sum(jnp.square(d), axis=-1))
+    if p == 0:
+        return sigma**2 * jnp.exp(-d / rho)
+    elif p == 1:
+        return (
+            sigma**2 * (1 + jnp.sqrt(3) * d / rho) * jnp.exp(-jnp.sqrt(3) * d / rho)
+        )
+    elif p == 2:
+        return (
+            sigma**2
+            * (1 + jnp.sqrt(5) * d / rho + 5 * d**2 / (3 * rho**2))
+            * jnp.exp(-jnp.sqrt(5) * d / rho)
+        )
+    else:
+        raise NotImplementedError
+
+
+def matern_Q_kernel(
+    landmarks: jnp.ndarray, sigma: float, rho: float, p: int
+) -> jnp.ndarray:
+    xy_coords = landmarks.reshape(-1, 2)
+    num_landmarks = xy_coords.shape[0]
+    kernel = matern_kernel(
+        d=xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :],
+        sigma=sigma,
+        rho=rho,
+        p=p,
+    )
+    Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
+    Q = Q.reshape(2 * num_landmarks, 2 * num_landmarks)
+    return Q
 
 
 class SDE(abc.ABC):
     """Abstract base class for SDEs."""
 
-    def __init__(self, sde_params: dict):
+    def __init__(self, config: ConfigDict):
         super().__init__()
-        assert "dimension" in sde_params.keys() and "num_steps" in sde_params.keys()
-        self.params = sde_params
+        self.config = config
 
     @property
     @abc.abstractmethod
@@ -24,12 +95,20 @@ class SDE(abc.ABC):
     @property
     def N(self) -> int:
         """number of time steps"""
-        return self.params["num_steps"]
+        return self.config.N
+
+    @N.setter
+    def N(self, value: int):
+        self.config.N = value
 
     @property
     def dim(self) -> int:
         """dimension"""
-        return self.params["dimension"]
+        return self.config.dim
+
+    @dim.setter
+    def dim(self, value: int):
+        self.config.dim = value
 
     @property
     def dt(self) -> float:
@@ -52,19 +131,15 @@ class SDE(abc.ABC):
         """Diffusion term of the SDE"""
         raise NotImplementedError
 
+    @abc.abstractmethod
     def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """covariance term: \sigma @ \sigma^T"""
-        _diffusion = self.diffusion(val, time, **kwargs)
-        _diffusion = sparseify(_diffusion, num_adjacent_nbs=1 * 2)
-        return jnp.dot(_diffusion, _diffusion.T)
+        raise NotImplementedError
 
     def inv_covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """inverse covariance term: (\sigma @ \sigma^T)^{-1}"""
         _covariance = self.covariance(val, time, **kwargs)
-        # _covariance = sparseify(_covariance, num_adjacent_nbs=1*2)
-        # return jnp.linalg.lstsq(_covariance, jnp.eye(self.dim), rcond=None)[0]
         return jnp.linalg.pinv(_covariance, hermitian=True, rcond=None)
-        # return jnp.linalg.lstsq(_covariance, kwargs["sigma_dw"], rcond=1e-4)[0]
 
     def div_covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """divergence of covariance term: \nabla_x (\sigma @ \sigma^T)"""
@@ -73,37 +148,25 @@ class SDE(abc.ABC):
         )
         return jnp.trace(_jacobian_covariance)
 
-    @abc.abstractmethod
-    def score_p(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
-        """score of the transition density"""
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def score_h(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
-        """score of Doob's h-transform density, used for simulating the bridge directly"""
-        raise NotImplementedError
-
-    def reverse_sde(self, score_p: callable = None):
+    def reverse_sde(self, score_func: Callable):
         """Time-invert the SDE using either pre-assigned score p or neural network approximation"""
-        if score_p is None:
-            score_p = self.score_p
-
-        sde_params = self.params
+        config = self.config
 
         class ReverseSDE(self.__class__):
             def __init__(self):
-                super().__init__(sde_params=sde_params)
+                super().__init__(config)
 
             def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
                 inverted_time = self.T - time
                 rev_drift_term = super().drift(val=val, time=inverted_time, **kwargs)
 
-                _score_p = score_p(val=val, time=inverted_time, **kwargs)
+                _score = score_func(val=val, time=inverted_time, **kwargs)
                 _covariance = super().covariance(val=val, time=inverted_time, **kwargs)
-                score_term = jnp.dot(_covariance, _score_p)
+                score_term = jnp.dot(_covariance, _score)
 
-                div_term = super().div_covariance(val=val, time=inverted_time, **kwargs)
-                return -rev_drift_term + score_term + div_term
+                # div_term = super().div_covariance(val=val, time=inverted_time, **kwargs)
+                # return -rev_drift_term + score_term + div_term
+                return -rev_drift_term + score_term
 
             def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
                 inverted_time = self.T - time
@@ -111,23 +174,20 @@ class SDE(abc.ABC):
 
         return ReverseSDE()
 
-    def bridge_sde(self, score_h: callable = None):
+    def bridge_sde(self, score_func: Callable):
         """Bridge the SDE using either pre-assigned score h or neural network approximation"""
-        if score_h is None:
-            score_h = self.score_h
-
-        sde_params = self.params
+        config = self.config
 
         class BridgeSDE(self.__class__):
             def __init__(self):
-                super().__init__(sde_params=sde_params)
+                super().__init__(config)
 
             def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
                 orig_drift_term = super().drift(val=val, time=time, **kwargs)
 
-                _score_h = score_h(val=val, time=time, **kwargs)
+                _score = score_func(val=val, time=time, **kwargs)
                 _covariance = super().covariance(val=val, time=time, **kwargs)
-                score_term = jnp.dot(_covariance, _score_h)
+                score_term = jnp.dot(_covariance, _score)
                 return orig_drift_term + score_term
 
             def diffusion(
@@ -139,8 +199,9 @@ class SDE(abc.ABC):
 
 
 class BrownianSDE(SDE):
-    def __init__(self, sde_params: dict):
-        super().__init__(sde_params=sde_params)
+    def __init__(self, config):
+        super().__init__(config)
+        self.config = config
 
     @property
     def T(self) -> float:
@@ -152,58 +213,30 @@ class BrownianSDE(SDE):
     def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
         return jnp.eye(self.dim)
 
-    def score_p(
-        self, val: ArrayLike, time: ArrayLike, init_val: ArrayLike, term_val: ArrayLike
-    ) -> jnp.ndarray:
-        assert val.shape == init_val.shape
-        return -(val - init_val) / (time + 1e-4)
-
-    def score_h(
-        self, val: ArrayLike, time: ArrayLike, init_val: ArrayLike, term_val: ArrayLike
-    ) -> jnp.ndarray:
-        assert val.shape == term_val.shape
-        return -(val - term_val) / (time - self.T + 1e-4)
+    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
+        return jnp.eye(self.dim)
 
 
-class Fixed_QSDE(SDE):
-    def __init__(self, sde_params: dict):
-        super().__init__(sde_params=sde_params)
-        assert "init_Q" in sde_params.keys()
-        assert self.params["init_Q"].shape[0] == self.dim
-
-    @property
-    def Q(self) -> jnp.ndarray:
-        return self.params["init_Q"]
-
-    @property
-    def T(self) -> float:
-        return 1.0
-
-    def drift(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
-        return jnp.zeros_like(val)
-
-    def diffusion(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
-        return self.Q
-
-    def score_p(self, val: jnp.ndarray, time: ArrayLike, **kwargs) -> jnp.ndarray:
-        return super().score_p(val, time, **kwargs)
-
-    def score_h(self, val: jnp.ndarray, time: ArrayLike, **kwargs) -> jnp.ndarray:
-        return super().score_h(val, time, **kwargs)
-
-
-class QSDE(SDE):
-    def __init__(self, sde_params: dict):
-        super().__init__(sde_params=sde_params)
-        assert "alpha" in sde_params.keys() and "sigma" in sde_params.keys()
+class GaussianKernelSDE(SDE):
+    def __init__(self, config: ConfigDict):
+        super().__init__(config)
+        self.config = config
 
     @property
     def alpha(self) -> float:
-        return self.params["alpha"]
+        return self.config.alpha
+
+    @alpha.setter
+    def alpha(self, value: float):
+        self.config.alpha = value
 
     @property
     def sigma(self) -> float:
-        return self.params["sigma"]
+        return self.config.sigma
+
+    @sigma.setter
+    def sigma(self, value: float):
+        self.config.sigma = value
 
     @property
     def T(self) -> float:
@@ -213,10 +246,46 @@ class QSDE(SDE):
         return jnp.zeros_like(val)
 
     def diffusion(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
-        return eval_Q(val, self.alpha, self.sigma)
+        return gaussian_Q_half_kernel(landmarks=val, alpha=self.alpha, sigma=self.sigma)
 
-    def score_p(self, val: jnp.ndarray, time: ArrayLike, **kwargs) -> jnp.ndarray:
-        return super().score_p(val, time, **kwargs)
+    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
+        return gaussian_Q_kernel(landmarks=val, alpha=self.alpha, sigma=self.sigma)
 
-    def score_h(self, val: jnp.ndarray, time: ArrayLike, **kwargs) -> jnp.ndarray:
-        return super().score_h(val, time, **kwargs)
+
+class MaternKernelSDE(SDE):
+    def __init__(self, config: ConfigDict):
+        super().__init__(config)
+
+    @property
+    def sigma(self) -> float:
+        return self.config.sigma
+
+    @sigma.setter
+    def sigma(self, value: float):
+        self.config.sigma = value
+
+    @property
+    def rho(self) -> float:
+        return self.config.rho
+
+    @rho.setter
+    def rho(self, value: float):
+        self.config.rho = value
+
+    @property
+    def p(self) -> int:
+        return self.config.p
+
+    @p.setter
+    def p(self, value: int):
+        self.config.p = value
+
+    @property
+    def T(self) -> float:
+        return 1.0
+
+    def drift(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
+        return jnp.zeros_like(val)
+
+    def diffusion(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
+        return matern_Q_kernel(landmarks=val, sigma=self.sigma, rho=self.rho, p=self.p)

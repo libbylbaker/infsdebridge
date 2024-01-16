@@ -1,9 +1,6 @@
 from collections import namedtuple
 from functools import partial
 
-import jax
-import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import optax
 import tensorflow as tf
 import tensorflow_datasets as tfds
@@ -11,8 +8,8 @@ from clu import metrics
 from flax import linen as nn
 from flax import struct
 from flax.training import train_state
-from jax.tree_util import Partial
-from jax.typing import ArrayLike
+
+from .setup import *
 
 
 ### Dimension helpers
@@ -45,35 +42,37 @@ class TrainState(train_state.TrainState):
     metrics: Metrics
 
 
+def create_optimizer(learning_rate: float, warmup_steps: int = 1000):
+    lr_scheduler = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=learning_rate,
+        warmup_steps=warmup_steps,
+        decay_steps=5000,
+        end_value=0.01 * learning_rate,
+    )
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adam(lr_scheduler),
+    )
+    return optimizer
+
+
 def create_train_state(
-    module: nn.Module, rng_key: jax.Array, learning_rate: float, input_shapes: list
+    model: nn.Module, rng_key: jax.Array, learning_rate: float, input_shapes: list
 ) -> TrainState:
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
-    variables = module.init(rng_key, *init_inputs, train=False)
+    variables = model.init(rng_key, *init_inputs, train=False)
     params = variables["params"]
     batch_stats = variables["batch_stats"] if "batch_stats" in variables else {}
 
-    tx = optax.adam(learning_rate)
+    optimizer = create_optimizer(learning_rate)
     return TrainState.create(
-        apply_fn=module.apply,
+        apply_fn=model.apply,
         params=params,
-        tx=tx,
+        tx=optimizer,
         batch_stats=batch_stats,
         metrics=Metrics.empty(),
     )
-
-
-@jax.jit
-def eval_scores(state: TrainState, vals: jax.Array, time: ArrayLike) -> jax.Array:
-    assert len(vals.shape) == 2
-    times = jnp.tile(jnp.array(time), (vals.shape[0], 1))
-    scores = state.apply_fn(
-        {"params": state.params, "batch_stats": state.batch_stats},
-        x=vals,
-        t=times,
-        train=False,
-    )
-    return scores
 
 
 @jax.jit
@@ -85,6 +84,7 @@ def eval_score(state: TrainState, val: jax.Array, time: ArrayLike) -> jax.Array:
         x=val,
         t=time,
         train=False,
+        mutable=False,
     )
     return score
 
@@ -113,52 +113,3 @@ def weighted_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
     Wx = jnp.dot(weight, x)
     xWx = jnp.dot(x, Wx)
     return xWx
-
-
-def Q_kernel(distance: jax.Array, alpha: float, sigma: float) -> jax.Array:
-    return (alpha**2) * jnp.exp(
-        -0.5 * jnp.sum(jnp.square(distance), axis=-1) / (sigma**2)
-    )
-
-
-def eval_Q(
-    x: jax.Array, alpha: float, sigma: float
-) -> jax.Array:  # evaluate for a single point
-    x_coords = x.reshape(-1, 2)
-    dim = x_coords.shape[0]
-    relative_distance = x_coords[:, jnp.newaxis, :] - x_coords[jnp.newaxis, :, :]
-    kernel = Q_kernel(relative_distance, alpha, sigma)
-    Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
-    Q = Q.reshape(2 * dim, 2 * dim)
-    return Q
-
-
-### Data helpers
-def sample_circle(num_points: int, scale: float, shifts: jax.Array) -> jax.Array:
-    theta = jnp.linspace(0, 2 * jnp.pi, num_points, endpoint=False)
-    x = jnp.cos(theta)
-    y = jnp.sin(theta)
-    return (scale * jnp.stack([x, y], axis=1) + shifts).flatten()
-
-
-def sample_ellipse(
-    num_points: int, scale: float, shifts: jax.Array, a: float, b: float
-) -> jax.Array:
-    theta = jnp.linspace(0, 2 * jnp.pi, num_points, endpoint=False)
-    x = a * jnp.cos(theta)
-    y = b * jnp.sin(theta)
-    return (scale * jnp.stack([x, y], axis=1) + shifts).flatten()
-
-
-# todo: The order of sampled points needs to be checked.
-def sample_square(num_points: int, scale: float, shifts: jax.Array) -> jax.Array:
-    num_points_per_side = num_points // 4
-    x1 = jnp.linspace(-1, 1, num_points_per_side, endpoint=False)
-    x2 = jnp.linspace(1, -1, num_points_per_side, endpoint=False)
-    y1 = jnp.linspace(-1, 1, num_points_per_side, endpoint=False)
-    y2 = jnp.linspace(1, -1, num_points_per_side, endpoint=False)
-    xy1 = jnp.stack([x1, jnp.ones_like(x1)], axis=1)
-    xy2 = jnp.stack([jnp.ones_like(y1), y2], axis=1)
-    xy3 = jnp.stack([x2, -jnp.ones_like(x2)], axis=1)
-    xy4 = jnp.stack([-jnp.ones_like(y1), y1], axis=1)
-    return (scale * jnp.concatenate([xy1, xy2, xy3, xy4], axis=0) + shifts).flatten()

@@ -1,7 +1,5 @@
 from functools import partial
 
-import matplotlib.pyplot as plt
-
 from .setup import *
 
 
@@ -37,7 +35,7 @@ def plot_2d_vector_field(
 
 
 def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
-    colormap = plt.cm.get_cmap("spring")
+    colormap = plt.cm.get_cmap("jet")
     assert len(trajectories.shape) == 3
     num_trajectories = trajectories.shape[0]
     dim = trajectories.shape[2]
@@ -50,7 +48,7 @@ def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
                 trajectories[i, :, 2 * j + 1],
                 color=colors[i],
                 zorder=1,
-                alpha=0.2,
+                alpha=0.7,
                 **kwargs,
             )
             plt.scatter(
