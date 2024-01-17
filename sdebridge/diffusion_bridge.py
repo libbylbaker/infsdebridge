@@ -163,18 +163,18 @@ class DiffusionBridge:
         net_params = setup_params["network"]
         training_params = setup_params["training"]
         score_p_net = ScoreNet(**net_params)
+
+        data_rng_key, network_init_rng_key = jax.random.split(rng_key)
+
         data_generator = self.get_trajectories_generator(
             batch_size=training_params["batch_size"],
-            # batch_size=1,
             process_type="forward",
             initial_val=initial_val,
             terminal_val=None,
             score_p=None,
             score_h=None,
-            rng_key=rng_key,
+            rng_key=data_rng_key,
         )
-
-        step_rng_key, network_rng_key = jax.random.split(rng_key)
 
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
@@ -206,12 +206,11 @@ class DiffusionBridge:
                     t=ts,
                     train=True,
                     mutable=["batch_stats"],
+                    rngs={"dropout": state.key},
                 )  # (B*N, d)
-                # loss = weighted_norm_square(
-                #     x=score_p_est - score_p_gradients, weight=covariances
-                # )  # (B*N, d) -> (B*N, )
-                # loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
-                loss = jnp.sum(jnp.square(score_p_est - score_p_gradients), axis=1)
+                loss = weighted_norm_square(
+                    x=score_p_est - score_p_gradients, weight=covariances
+                )  # (B*N, d) -> (B*N, )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
@@ -219,6 +218,8 @@ class DiffusionBridge:
             (loss, updates), grads = grad_fn(state.params)
             state = state.apply_gradients(grads=grads)
             state = state.replace(batch_stats=updates["batch_stats"])
+            step_rng_key, _ = random.split(state.key)
+            state = state.replace(key=step_rng_key)
 
             metric_updates = state.metrics.single_from_model_output(loss=loss)
             metrics = state.metrics.merge(metric_updates)
@@ -227,7 +228,7 @@ class DiffusionBridge:
 
         state = create_train_state(
             score_p_net,
-            network_rng_key,
+            network_init_rng_key,
             training_params["learning_rate"],
             [
                 (training_params["batch_size"], self.sde.dim),
@@ -263,6 +264,8 @@ class DiffusionBridge:
         training_params = setup_params["training"]
         score_p_star_net = ScoreNet(**net_params)
 
+        data_rng_key, network_init_rng_key = jax.random.split(rng_key)
+
         data_generator = self.get_trajectories_generator(
             batch_size=training_params["batch_size"],
             process_type="backward_bridge",
@@ -270,10 +273,8 @@ class DiffusionBridge:
             terminal_val=terminal_val,
             score_p=score_p,
             score_h=None,
-            rng_key=rng_key,
+            rng_key=data_rng_key,
         )
-
-        step_rng_key, network_rng_key = jax.random.split(rng_key)
 
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
@@ -308,6 +309,7 @@ class DiffusionBridge:
                     t=ts,
                     train=True,
                     mutable=["batch_stats"],
+                    rngs={"dropout": state.key},
                 )  # (B*N, d)
                 loss = weighted_norm_square(
                     x=score_p_star_est - score_p_star_gradients, weight=covariances
@@ -319,6 +321,8 @@ class DiffusionBridge:
             (loss, updates), grads = grad_fn(state.params)
             state = state.apply_gradients(grads=grads)
             state = state.replace(batch_stats=updates["batch_stats"])
+            step_rng_key, _ = random.split(state.key)
+            state = state.replace(key=step_rng_key)
 
             metric_updates = state.metrics.single_from_model_output(loss=loss)
             metrics = state.metrics.merge(metric_updates)
@@ -327,7 +331,7 @@ class DiffusionBridge:
 
         state = create_train_state(
             score_p_star_net,
-            network_rng_key,
+            network_init_rng_key,
             training_params["learning_rate"],
             [
                 (training_params["batch_size"], self.sde.dim),

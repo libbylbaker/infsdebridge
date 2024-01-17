@@ -38,16 +38,17 @@ class Metrics(metrics.Collection):
 
 
 class TrainState(train_state.TrainState):
+    key: jax.Array
     batch_stats: any
     metrics: Metrics
 
 
-def create_optimizer(learning_rate: float, warmup_steps: int = 1000):
+def create_optimizer(learning_rate: float, warmup_steps: int = 5000):
     lr_scheduler = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=learning_rate,
         warmup_steps=warmup_steps,
-        decay_steps=5000,
+        decay_steps=20000,
         end_value=0.01 * learning_rate,
     )
     optimizer = optax.chain(
@@ -60,19 +61,28 @@ def create_optimizer(learning_rate: float, warmup_steps: int = 1000):
 def create_train_state(
     model: nn.Module, rng_key: jax.Array, learning_rate: float, input_shapes: list
 ) -> TrainState:
+    rng_key, params_init_rng_key, dropout_init_rng_key = random.split(rng_key, 3)
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
-    variables = model.init(rng_key, *init_inputs, train=False)
+    variables = model.init(
+        {"params": params_init_rng_key, "dropout": dropout_init_rng_key},
+        *init_inputs,
+        train=True,
+    )
     params = variables["params"]
     batch_stats = variables["batch_stats"] if "batch_stats" in variables else {}
 
     optimizer = create_optimizer(learning_rate)
-    return TrainState.create(
+
+    state = TrainState.create(
         apply_fn=model.apply,
         params=params,
+        key=rng_key,
         tx=optimizer,
         batch_stats=batch_stats,
         metrics=Metrics.empty(),
     )
+
+    return state
 
 
 @jax.jit

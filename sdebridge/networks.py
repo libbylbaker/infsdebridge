@@ -53,16 +53,20 @@ class MLP(nn.Module):
     layer_dims: Sequence[int]
     kernel_init: Callable = xavier_init
     batchnorm: bool = False
+    dropout_prob: float = 0.0
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool) -> jnp.ndarray:
         for dim in self.layer_dims:
             x = nn.Dense(dim, kernel_init=self.kernel_init)(x)
+            x = x + nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
             x = get_act_fn(self.act_fn)(x)
             if self.batchnorm:
                 x = nn.BatchNorm(use_running_average=not train)(x)
+            else:
+                x = nn.LayerNorm()(x)
 
-            x = nn.Dense(self.output_dim, kernel_init=self.kernel_init)(x)
+        x = nn.Dense(self.output_dim, kernel_init=self.kernel_init)(x)
         return x
 
 
@@ -71,10 +75,12 @@ class ScoreNet(nn.Module):
     time_embedding_dim: int
     encoding_dim: int
     act_fn: str
-    encoder_layer_dims: Sequence[int]
+    t_encoder_layer_dims: Sequence[int]
+    x_encoder_layer_dims: Sequence[int]
     decoder_layer_dims: Sequence[int]
     kernel_init: Callable = xavier_init
     batchnorm: bool = False
+    dropout_prob: float = 0.0
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
@@ -82,24 +88,30 @@ class ScoreNet(nn.Module):
         t = MLP(
             output_dim=self.encoding_dim,
             act_fn=self.act_fn,
-            layer_dims=self.encoder_layer_dims,
+            layer_dims=self.t_encoder_layer_dims,
             kernel_init=self.kernel_init,
             batchnorm=self.batchnorm,
+            dropout_prob=self.dropout_prob,
         )(t, train)
+
         x = MLP(
             output_dim=self.encoding_dim,
             act_fn=self.act_fn,
-            layer_dims=self.encoder_layer_dims,
+            layer_dims=self.x_encoder_layer_dims,
             kernel_init=self.kernel_init,
             batchnorm=self.batchnorm,
+            dropout_prob=self.dropout_prob,
         )(x, train)
+
         xt = jnp.concatenate([x, t], axis=-1)
+
         score = MLP(
             output_dim=self.output_dim,
             act_fn=self.act_fn,
             layer_dims=self.decoder_layer_dims,
             kernel_init=self.kernel_init,
             batchnorm=self.batchnorm,
+            dropout_prob=self.dropout_prob,
         )(xt, train)
 
         return score

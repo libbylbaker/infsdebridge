@@ -11,7 +11,7 @@ def batch_multi(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
     return vmap(jnp.dot, in_axes=(0, 0), out_axes=0)(A, B)
 
 
-@Partial(jax.jit, static_argnames=("sde"))
+@Partial(jax.jit, static_argnums=(0))
 def euler_maruyama(
     sde: SDE,
     initial_vals: jnp.ndarray,
