@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tqdm import tqdm
 
-from .networks import AttnScoreNet, ScoreNet, ScoreUNet
+from .networks import ScoreNet, ScoreUNet
 from .sde import SDE
 from .setup import *
 from .solver import euler_maruyama
@@ -162,9 +162,12 @@ class DiffusionBridge:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
-        # score_p_net = ScoreNet(**net_params)
-        score_p_net = ScoreUNet(**net_params)
-        # score_p_net = AttnScoreNet(**net_params)
+        if training_params["network_type"] == "MLP":
+            score_p_net = ScoreNet(**net_params)
+        elif training_params["network_type"] == "UNet":
+            score_p_net = ScoreUNet(**net_params)
+        else:
+            raise NotImplementedError
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 
@@ -266,8 +269,12 @@ class DiffusionBridge:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
-        # score_p_star_net = ScoreNet(**net_params)
-        score_p_star_net = ScoreUNet(**net_params)
+        if training_params["network_type"] == "MLP":
+            score_p_star_net = ScoreNet(**net_params)
+        elif training_params["network_type"] == "UNet":
+            score_p_star_net = ScoreUNet(**net_params)
+        else:
+            raise NotImplementedError
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 

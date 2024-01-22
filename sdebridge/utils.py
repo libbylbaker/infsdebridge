@@ -4,7 +4,7 @@ from functools import partial
 import optax
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from clu import metrics
+from clu import metrics, parameter_overview
 from flax import linen as nn
 from flax import struct
 from flax.training import train_state
@@ -89,6 +89,7 @@ def create_train_state(
         metrics=Metrics.empty(),
     )
 
+    print(parameter_overview.get_parameter_overview(params))
     return state
 
 

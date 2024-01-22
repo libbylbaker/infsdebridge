@@ -23,7 +23,7 @@ def get_time_step_embedding(
     time_steps: ArrayLike,
     embedding_dim: int,
     max_period: int = 10000,
-    scaling_factor: float = 10000.0,
+    scaling_factor: float = 2000.0,
 ) -> jnp.ndarray:
     def encode_scalar(t: ArrayLike) -> jnp.ndarray:
         k = embedding_dim // 2
@@ -79,88 +79,12 @@ class MLP(nn.Module):
         x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
         return x
 
-
-class AttnBlock(nn.Module):
-    output_dim: int
-    num_heads: int
-
-    def setup(self) -> None:
-        self.qkv_proj = nn.Dense(
-            self.output_dim * 3,
-            kernel_init=nn.initializers.xavier_uniform(),
-            bias_init=nn.initializers.zeros,
-        )
-        self.out_proj = nn.Dense(
-            self.output_dim,
-            kernel_init=nn.initializers.xavier_uniform(),
-            bias_init=nn.initializers.zeros,
-        )
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        batch_size = x.shape[0]
-        qkv = self.qkv_proj(x)
-        qkv = qkv.reshape(batch_size, self.num_heads, -1)
-        q, k, v = jnp.array_split(qkv, 3, axis=-1)
-
-        values = scaled_dot_product(q, k, v)
-        values = values.reshape(batch_size, self.output_dim)
-        output = self.out_proj(values)
-        return output
-
-
-class AttnScoreNet(nn.Module):
-    output_dim: int
-    time_embedding_dim: int
-    encoding_dim: int
-    act_fn: str
-    t_encoder_layer_dims: Sequence[int]
-    x_encoder_layer_dims: Sequence[int]
-    decoder_layer_dims: Sequence[int]
-    num_heads: int = 4
-    batchnorm: bool = False
-    dropout_prob: float = 0.0
-
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
-        t = get_time_step_embedding(t, self.time_embedding_dim)
-        t = MLP(
-            output_dim=self.encoding_dim,
-            act_fn=self.act_fn,
-            layer_dims=self.t_encoder_layer_dims,
-            batchnorm=self.batchnorm,
-            dropout_prob=self.dropout_prob,
-        )(t, train)
-
-        x = MLP(
-            output_dim=self.encoding_dim,
-            act_fn=self.act_fn,
-            layer_dims=self.x_encoder_layer_dims,
-            batchnorm=self.batchnorm,
-            dropout_prob=self.dropout_prob,
-        )(x, train)
-
-        xt = jnp.concatenate([x, t], axis=-1)
-
-        xt = AttnBlock(output_dim=self.encoding_dim, num_heads=self.num_heads)(xt)
-
-        score = MLP(
-            output_dim=self.output_dim,
-            act_fn=self.act_fn,
-            layer_dims=self.decoder_layer_dims,
-            batchnorm=self.batchnorm,
-            dropout_prob=self.dropout_prob,
-        )(xt, train)
-
-        return score
-
-
 class ScoreNet(nn.Module):
     output_dim: int
     time_embedding_dim: int
     encoding_dim: int
     act_fn: str
-    t_encoder_layer_dims: Sequence[int]
-    x_encoder_layer_dims: Sequence[int]
+    encoder_layer_dims: Sequence[int]
     decoder_layer_dims: Sequence[int]
     batchnorm: bool = False
     dropout_prob: float = 0.0
@@ -171,7 +95,7 @@ class ScoreNet(nn.Module):
         t = MLP(
             output_dim=self.encoding_dim,
             act_fn=self.act_fn,
-            layer_dims=self.t_encoder_layer_dims,
+            layer_dims=self.encoder_layer_dims,
             batchnorm=self.batchnorm,
             dropout_prob=self.dropout_prob,
         )(t, train)
@@ -179,7 +103,7 @@ class ScoreNet(nn.Module):
         x = MLP(
             output_dim=self.encoding_dim,
             act_fn=self.act_fn,
-            layer_dims=self.x_encoder_layer_dims,
+            layer_dims=self.encoder_layer_dims,
             batchnorm=self.batchnorm,
             dropout_prob=self.dropout_prob,
         )(x, train)

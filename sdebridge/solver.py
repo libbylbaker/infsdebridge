@@ -1,7 +1,4 @@
 from collections import namedtuple
-
-from jax.tree_util import Partial
-
 from .sde import SDE
 from .setup import *
 
@@ -11,7 +8,7 @@ def batch_multi(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
     return vmap(jnp.dot, in_axes=(0, 0), out_axes=0)(A, B)
 
 
-@Partial(jax.jit, static_argnums=(0))
+@partial(jax.jit, static_argnums=(0, ), backend='cpu')
 def euler_maruyama(
     sde: SDE,
     initial_vals: jnp.ndarray,
