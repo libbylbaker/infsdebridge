@@ -23,12 +23,10 @@ def euler_maruyama(
     assert initial_vals.shape[-1] == sde.dim
     assert terminal_vals.shape[-1] == sde.dim if enforce_terminal_constraint else True
 
-    SolverState = namedtuple(
-        "SolverState", ["vals", "scaled_stochastic_increment", "step_key"]
-    )
+    SolverState = namedtuple("SolverState", ["vals", "grads", "step_key"])
     init_state = SolverState(
         vals=initial_vals,
-        scaled_stochastic_increment=jnp.empty_like(initial_vals),
+        grads=jnp.empty_like(initial_vals),
         step_key=rng_key,
     )
 
@@ -49,27 +47,22 @@ def euler_maruyama(
         _inv_covariance = vmap(sde.inv_covariance, in_axes=(0, None))(
             state.vals, time
         )  # (B, d, d)
-        # _inv_covariance = jnp.tile(jnp.eye(sde.dim), reps=(state.vals.shape[0], 1, 1))
 
-        scaled_stochastic_increment = (
-            -batch_multi(_inv_covariance, diffusion_step) / sde.dt
-        )  # (B, d)
-        # _covariance = vmap(sde.covariance, in_axes=(0, None))(state.vals, time)
-        # scaled_stochastic_increment = vmap(jnp.linalg.lstsq, in_axes=(0, 0))(_covariance, diffusion_step)[0]
+        grads = -batch_multi(_inv_covariance, diffusion_step) / sde.dt  # (B, d)
 
         new_vals = state.vals + drift_step + diffusion_step  # (B, d)
         new_state = SolverState(
             vals=new_vals,
-            scaled_stochastic_increment=scaled_stochastic_increment,
+            grads=grads,
             step_key=step_key,
         )
         return new_state, (
             state.vals,
-            state.scaled_stochastic_increment,
+            state.grads,
             state.step_key,
         )
 
-    _, (trajectories, scaled_stochastic_increments, step_keys) = jax.lax.scan(
+    _, (trajectories, gradients, step_keys) = jax.lax.scan(
         euler_maruyama_step,
         init=init_state,
         xs=(sde.ts[:-1]),
@@ -80,8 +73,6 @@ def euler_maruyama(
         trajectories = trajectories.at[-1].set(terminal_vals)
     return {
         "trajectories": jnp.swapaxes(trajectories, 0, 1),
-        "scaled_stochastic_increments": jnp.swapaxes(
-            scaled_stochastic_increments, 0, 1
-        ),
+        "gradients": jnp.swapaxes(gradients, 0, 1),
         "last_key": step_keys[-1],
     }

@@ -14,7 +14,8 @@ def sample_ellipse(
     theta = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
     x = a * np.cos(theta)
     y = b * np.sin(theta)
-    return (scale * np.stack([x, y], axis=1) + shifts).flatten()
+    return scale * np.stack([x, y], axis=0) + shifts[:, None]
+    # return (scale * np.stack([x, y], axis=1) + shifts).flatten()
 
 
 def order_points(unordered_points):

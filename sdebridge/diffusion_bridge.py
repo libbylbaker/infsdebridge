@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tqdm import tqdm
 
-from .networks import ScoreNet
+from .networks import AttnScoreNet, ScoreNet, ScoreUNet
 from .sde import SDE
 from .setup import *
 from .solver import euler_maruyama
@@ -148,7 +148,7 @@ class DiffusionBridge:
                 rng_key = histories["last_key"]
                 yield (
                     histories["trajectories"],
-                    histories["scaled_stochastic_increments"],
+                    histories["gradients"],
                 )
 
         return generator
@@ -162,7 +162,9 @@ class DiffusionBridge:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
-        score_p_net = ScoreNet(**net_params)
+        # score_p_net = ScoreNet(**net_params)
+        score_p_net = ScoreUNet(**net_params)
+        # score_p_net = AttnScoreNet(**net_params)
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 
@@ -187,15 +189,14 @@ class DiffusionBridge:
 
         @jax.jit
         def train_step(state: TrainState, batch: tuple) -> TrainState:
-            trajectories, scaled_stochastic_increments = batch
+            trajectories, gradients = batch
             ts = flatten_batch(
                 unsqueeze(
                     jnp.tile(self.sde.ts[1:], reps=(training_params["batch_size"], 1)),
                     axis=-1,
                 )
             )  # (B*N, 1)
-            score_p_gradients = scaled_stochastic_increments  # (B, N, d)
-            score_p_gradients = flatten_batch(score_p_gradients)  # (B*N, d)
+            score_p_gradients = flatten_batch(gradients)  # (B*N, d)
             trajectories = flatten_batch(trajectories)  # (B*N, d)
             covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, d, d)
 
@@ -227,13 +228,16 @@ class DiffusionBridge:
             return state
 
         state = create_train_state(
-            score_p_net,
-            network_init_rng_key,
-            training_params["learning_rate"],
-            [
+            model=score_p_net,
+            rng_key=network_init_rng_key,
+            input_shapes=[
                 (training_params["batch_size"], self.sde.dim),
                 (training_params["batch_size"], 1),
             ],
+            learning_rate=training_params["learning_rate"],
+            warmup_steps=training_params["warmup_steps"],
+            decay_steps=training_params["num_epochs"]
+            * training_params["num_batches_per_epoch"],
         )
         pbar = tqdm(
             range(training_params["num_epochs"]),
@@ -262,7 +266,8 @@ class DiffusionBridge:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
-        score_p_star_net = ScoreNet(**net_params)
+        # score_p_star_net = ScoreNet(**net_params)
+        score_p_star_net = ScoreUNet(**net_params)
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 
@@ -287,7 +292,7 @@ class DiffusionBridge:
 
         @jax.jit
         def train_step(state: TrainState, batch: tuple) -> TrainState:
-            trajectories, scaled_stochastic_increments = batch
+            trajectories, gradients = batch
             ts = flatten_batch(
                 unsqueeze(
                     jnp.tile(
@@ -297,8 +302,7 @@ class DiffusionBridge:
                     axis=-1,
                 )
             )  # (B*N, 1)
-            score_p_star_gradients = scaled_stochastic_increments
-            score_p_star_gradients = flatten_batch(score_p_star_gradients)  # (B*N, d)
+            score_p_star_gradients = flatten_batch(gradients)  # (B*N, d)
             trajectories = flatten_batch(trajectories)  # (B*N, d)
             covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, d, d)
 
@@ -330,13 +334,16 @@ class DiffusionBridge:
             return state
 
         state = create_train_state(
-            score_p_star_net,
-            network_init_rng_key,
-            training_params["learning_rate"],
-            [
+            model=score_p_star_net,
+            rng_key=network_init_rng_key,
+            input_shapes=[
                 (training_params["batch_size"], self.sde.dim),
                 (training_params["batch_size"], 1),
             ],
+            learning_rate=training_params["learning_rate"],
+            warmup_steps=training_params["warmup_steps"],
+            decay_steps=training_params["num_epochs"]
+            * training_params["num_batches_per_epoch"],
         )
         pbar = tqdm(
             range(training_params["num_epochs"]),

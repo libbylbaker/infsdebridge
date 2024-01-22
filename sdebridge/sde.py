@@ -8,19 +8,14 @@ from .setup import *
 
 
 ### Kernels ###
-def gaussian_kernel(d: jnp.ndarray, alpha: float, sigma: float) -> jnp.ndarray:
-    d = jnp.sqrt(jnp.sum(jnp.square(d), axis=-1))
-    return alpha * jnp.exp(-0.5 * d**2 / sigma**2)
-
-
 def gaussian_Q_half_kernel(
     landmarks: jnp.ndarray, alpha: float, sigma: float
 ) -> jnp.ndarray:
     xy_coords = landmarks.reshape(-1, 2)
     num_landmarks = xy_coords.shape[0]
     diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
-    dis = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1))
-    kernel = alpha * jnp.exp(-(dis**2) / sigma**2)
+    dis = jnp.sum(jnp.square(diff), axis=-1)
+    kernel = alpha * jnp.exp(-dis / sigma**2)
     Q_half = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
     Q_half = Q_half.reshape(2 * num_landmarks, 2 * num_landmarks)
     return Q_half
@@ -32,13 +27,9 @@ def gaussian_Q_kernel(
     xy_coords = landmarks.reshape(-1, 2)
     num_landmarks = xy_coords.shape[0]
     diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
-    dis = jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1))
+    dis = jnp.sum(jnp.square(diff), axis=-1)
     kernel = (
-        0.5
-        * (alpha**4)
-        * (sigma**2)
-        * jnp.pi
-        * jnp.exp(-0.5 * dis**2 / sigma**2)
+        0.5 * (alpha**4) * (sigma**2) * jnp.pi * jnp.exp(-0.5 * dis / (sigma**2))
     )
     Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
     Q = Q.reshape(2 * num_landmarks, 2 * num_landmarks)
@@ -87,10 +78,13 @@ class SDE(abc.ABC):
         self.config = config
 
     @property
-    @abc.abstractmethod
     def T(self) -> float:
         """total time"""
-        raise NotImplementedError
+        return self.config.T
+
+    @T.setter
+    def T(self, value: float):
+        self.config.T = value
 
     @property
     def N(self) -> int:
@@ -143,10 +137,8 @@ class SDE(abc.ABC):
 
     def div_covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """divergence of covariance term: \nabla_x (\sigma @ \sigma^T)"""
-        _jacobian_covariance = jax.jacfwd(self.covariance, argnums=0)(
-            val, time, **kwargs
-        )
-        return jnp.trace(_jacobian_covariance)
+        _jacobian = jax.jacfwd(self.covariance, argnums=0)(val, time, **kwargs)
+        return jnp.trace(_jacobian, axis1=-2, axis2=-1)
 
     def reverse_sde(self, score_func: Callable):
         """Time-invert the SDE using either pre-assigned score p or neural network approximation"""
@@ -164,9 +156,8 @@ class SDE(abc.ABC):
                 _covariance = super().covariance(val=val, time=inverted_time, **kwargs)
                 score_term = jnp.dot(_covariance, _score)
 
-                # div_term = super().div_covariance(val=val, time=inverted_time, **kwargs)
-                # return -rev_drift_term + score_term + div_term
-                return -rev_drift_term + score_term
+                div_term = super().div_covariance(val=val, time=inverted_time, **kwargs)
+                return -rev_drift_term + score_term + div_term
 
             def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
                 inverted_time = self.T - time
@@ -201,26 +192,55 @@ class SDE(abc.ABC):
 class BrownianSDE(SDE):
     def __init__(self, config):
         super().__init__(config)
-        self.config = config
 
     @property
-    def T(self) -> float:
-        return 1.0
+    def alpha(self) -> float:
+        return self.config.alpha
+
+    @alpha.setter
+    def alpha(self, value: float):
+        self.config.alpha = value
 
     def drift(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
         return jnp.zeros_like(val)
 
     def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
-        return jnp.eye(self.dim)
+        return self.alpha * jnp.eye(self.dim)
 
     def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return jnp.eye(self.dim)
+        return jnp.dot(self.diffusion(val, time), self.diffusion(val, time).T)
+
+
+class DampedBrownianSDE(SDE):
+    def __init__(self, config):
+        super().__init__(config)
+
+    @property
+    def alpha(self) -> float:
+        return self.config.alpha
+
+    @alpha.setter
+    def alpha(self, value: float):
+        self.config.alpha = value
+
+    def drift(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
+        return jnp.zeros_like(val)
+
+    def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
+        return self.alpha * jnp.diag(
+            1.0
+            / jnp.concatenate(
+                [jnp.arange(1, self.dim // 2 + 1), jnp.arange(1, self.dim // 2 + 1)]
+            )
+        )
+
+    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
+        return jnp.dot(self.diffusion(val, time), self.diffusion(val, time).T)
 
 
 class GaussianKernelSDE(SDE):
     def __init__(self, config: ConfigDict):
         super().__init__(config)
-        self.config = config
 
     @property
     def alpha(self) -> float:
@@ -237,10 +257,6 @@ class GaussianKernelSDE(SDE):
     @sigma.setter
     def sigma(self, value: float):
         self.config.sigma = value
-
-    @property
-    def T(self) -> float:
-        return 1.0
 
     def drift(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
         return jnp.zeros_like(val)
@@ -280,12 +296,22 @@ class MaternKernelSDE(SDE):
     def p(self, value: int):
         self.config.p = value
 
-    @property
-    def T(self) -> float:
-        return 1.0
-
     def drift(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
         return jnp.zeros_like(val)
 
     def diffusion(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
         return matern_Q_kernel(landmarks=val, sigma=self.sigma, rho=self.rho, p=self.p)
+
+
+class CustomizedSDE(SDE):
+    def __init__(self, config: ConfigDict):
+        super().__init__(config)
+
+    def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
+        return self.config.drift(val=val, time=time, **kwargs)
+
+    def diffusion(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
+        return self.config.diffusion(val=val, time=time, **kwargs)
+
+    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
+        return self.config.covariance(val=val, time=time, **kwargs)

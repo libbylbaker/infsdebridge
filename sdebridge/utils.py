@@ -43,23 +43,28 @@ class TrainState(train_state.TrainState):
     metrics: Metrics
 
 
-def create_optimizer(learning_rate: float, warmup_steps: int = 5000):
+def create_optimizer(learning_rate: float, warmup_steps: int, decay_steps: int):
     lr_scheduler = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=learning_rate,
         warmup_steps=warmup_steps,
-        decay_steps=20000,
+        decay_steps=decay_steps,
         end_value=0.01 * learning_rate,
     )
     optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
+        # optax.clip_by_global_norm(1.0),
         optax.adam(lr_scheduler),
     )
     return optimizer
 
 
 def create_train_state(
-    model: nn.Module, rng_key: jax.Array, learning_rate: float, input_shapes: list
+    model: nn.Module,
+    rng_key: jax.Array,
+    input_shapes: Sequence[tuple],
+    learning_rate: float,
+    warmup_steps: int = 500,
+    decay_steps: int = 2000,
 ) -> TrainState:
     rng_key, params_init_rng_key, dropout_init_rng_key = random.split(rng_key, 3)
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
@@ -71,7 +76,9 @@ def create_train_state(
     params = variables["params"]
     batch_stats = variables["batch_stats"] if "batch_stats" in variables else {}
 
-    optimizer = create_optimizer(learning_rate)
+    optimizer = create_optimizer(
+        learning_rate=learning_rate, warmup_steps=warmup_steps, decay_steps=decay_steps
+    )
 
     state = TrainState.create(
         apply_fn=model.apply,

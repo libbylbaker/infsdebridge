@@ -1,13 +1,29 @@
+from typing import Any
+
 from flax import linen as nn
 
 from .setup import *
+
+# import jax.numpy as jnp
+# from jax.typing import ArrayLike
+# from typing import Sequence
+# import math
+# import jax
+
+
+def scaled_dot_product(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
+    dim_k = q.shape[-1]
+    attn_scores = jnp.matmul(q, jnp.swapaxes(k, -2, -1)) / math.sqrt(dim_k)
+    attn = nn.softmax(attn_scores, axis=-1)
+    values = jnp.matmul(attn, v)
+    return values
 
 
 def get_time_step_embedding(
     time_steps: ArrayLike,
     embedding_dim: int,
     max_period: int = 10000,
-    scaling_factor: float = 100.0,
+    scaling_factor: float = 10000.0,
 ) -> jnp.ndarray:
     def encode_scalar(t: ArrayLike) -> jnp.ndarray:
         k = embedding_dim // 2
@@ -32,6 +48,8 @@ def get_act_fn(name: str) -> nn.activation:
         return nn.elu
     elif name == "gelu":
         return nn.gelu
+    elif name == "silu":
+        return nn.silu
     elif name == "tanh":
         return nn.tanh
     elif name == "sigmoid":
@@ -40,37 +58,57 @@ def get_act_fn(name: str) -> nn.activation:
         raise ValueError(f"Activation {name} not recognized.")
 
 
-def xavier_init(
-    rng_key: jax.Array, shape: Sequence[int], dtype: jnp.dtype = jnp.float32
-) -> jnp.ndarray:
-    bound = math.sqrt(6.0) / math.sqrt(shape[0] + shape[1])
-    return random.uniform(rng_key, shape, dtype, minval=-bound, maxval=bound)
-
-
 class MLP(nn.Module):
     output_dim: int
     act_fn: str
     layer_dims: Sequence[int]
-    kernel_init: Callable = xavier_init
     batchnorm: bool = False
     dropout_prob: float = 0.0
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool) -> jnp.ndarray:
         for dim in self.layer_dims:
-            x = nn.Dense(dim, kernel_init=self.kernel_init)(x)
-            x = x + nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-            x = get_act_fn(self.act_fn)(x)
+            x = nn.Dense(dim, kernel_init=nn.initializers.xavier_normal())(x)
+            x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
+            x = x + get_act_fn(self.act_fn)(x)
             if self.batchnorm:
                 x = nn.BatchNorm(use_running_average=not train)(x)
             else:
                 x = nn.LayerNorm()(x)
 
-        x = nn.Dense(self.output_dim, kernel_init=self.kernel_init)(x)
+        x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
         return x
 
 
-class ScoreNet(nn.Module):
+class AttnBlock(nn.Module):
+    output_dim: int
+    num_heads: int
+
+    def setup(self) -> None:
+        self.qkv_proj = nn.Dense(
+            self.output_dim * 3,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )
+        self.out_proj = nn.Dense(
+            self.output_dim,
+            kernel_init=nn.initializers.xavier_uniform(),
+            bias_init=nn.initializers.zeros,
+        )
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        batch_size = x.shape[0]
+        qkv = self.qkv_proj(x)
+        qkv = qkv.reshape(batch_size, self.num_heads, -1)
+        q, k, v = jnp.array_split(qkv, 3, axis=-1)
+
+        values = scaled_dot_product(q, k, v)
+        values = values.reshape(batch_size, self.output_dim)
+        output = self.out_proj(values)
+        return output
+
+
+class AttnScoreNet(nn.Module):
     output_dim: int
     time_embedding_dim: int
     encoding_dim: int
@@ -78,7 +116,7 @@ class ScoreNet(nn.Module):
     t_encoder_layer_dims: Sequence[int]
     x_encoder_layer_dims: Sequence[int]
     decoder_layer_dims: Sequence[int]
-    kernel_init: Callable = xavier_init
+    num_heads: int = 4
     batchnorm: bool = False
     dropout_prob: float = 0.0
 
@@ -89,7 +127,6 @@ class ScoreNet(nn.Module):
             output_dim=self.encoding_dim,
             act_fn=self.act_fn,
             layer_dims=self.t_encoder_layer_dims,
-            kernel_init=self.kernel_init,
             batchnorm=self.batchnorm,
             dropout_prob=self.dropout_prob,
         )(t, train)
@@ -98,7 +135,51 @@ class ScoreNet(nn.Module):
             output_dim=self.encoding_dim,
             act_fn=self.act_fn,
             layer_dims=self.x_encoder_layer_dims,
-            kernel_init=self.kernel_init,
+            batchnorm=self.batchnorm,
+            dropout_prob=self.dropout_prob,
+        )(x, train)
+
+        xt = jnp.concatenate([x, t], axis=-1)
+
+        xt = AttnBlock(output_dim=self.encoding_dim, num_heads=self.num_heads)(xt)
+
+        score = MLP(
+            output_dim=self.output_dim,
+            act_fn=self.act_fn,
+            layer_dims=self.decoder_layer_dims,
+            batchnorm=self.batchnorm,
+            dropout_prob=self.dropout_prob,
+        )(xt, train)
+
+        return score
+
+
+class ScoreNet(nn.Module):
+    output_dim: int
+    time_embedding_dim: int
+    encoding_dim: int
+    act_fn: str
+    t_encoder_layer_dims: Sequence[int]
+    x_encoder_layer_dims: Sequence[int]
+    decoder_layer_dims: Sequence[int]
+    batchnorm: bool = False
+    dropout_prob: float = 0.0
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
+        t = get_time_step_embedding(t, self.time_embedding_dim)
+        t = MLP(
+            output_dim=self.encoding_dim,
+            act_fn=self.act_fn,
+            layer_dims=self.t_encoder_layer_dims,
+            batchnorm=self.batchnorm,
+            dropout_prob=self.dropout_prob,
+        )(t, train)
+
+        x = MLP(
+            output_dim=self.encoding_dim,
+            act_fn=self.act_fn,
+            layer_dims=self.x_encoder_layer_dims,
             batchnorm=self.batchnorm,
             dropout_prob=self.dropout_prob,
         )(x, train)
@@ -109,7 +190,6 @@ class ScoreNet(nn.Module):
             output_dim=self.output_dim,
             act_fn=self.act_fn,
             layer_dims=self.decoder_layer_dims,
-            kernel_init=self.kernel_init,
             batchnorm=self.batchnorm,
             dropout_prob=self.dropout_prob,
         )(xt, train)
@@ -117,8 +197,144 @@ class ScoreNet(nn.Module):
         return score
 
 
+class Upsample(nn.Module):
+    output_dim: int
+    act_fn: str
+    batchnorm: bool = False
+    dropout_prob: float = 0.0
+
+    @nn.compact
+    def __call__(
+        self, x1: jnp.ndarray, x2: jnp.ndarray, t_emb: jnp.ndarray, train: bool
+    ) -> jnp.ndarray:
+        x_in = jnp.concatenate([x1, x2], axis=-1)
+        input_dim = x_in.shape[-1]
+        x = nn.Dense(input_dim, kernel_init=nn.initializers.xavier_normal())(x_in)
+        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
+        scale, shift = TimeEmbeddingMLP(input_dim, self.act_fn)(t_emb)
+        x = x * (1.0 + scale) + shift
+        x = x_in + get_act_fn(self.act_fn)(x)
+        x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
+        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
+        x = get_act_fn(self.act_fn)(x)
+        if self.batchnorm:
+            x = nn.BatchNorm(use_running_average=not train)(x)
+        else:
+            x = nn.LayerNorm()(x)
+        return x
+
+
+class Downsample(nn.Module):
+    output_dim: int
+    act_fn: str
+    batchnorm: bool = False
+    dropout_prob: float = 0.0
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, t_emb: jnp.ndarray, train: bool) -> jnp.ndarray:
+        x_in = x
+        input_dim = x_in.shape[-1]
+        x = nn.Dense(input_dim, kernel_init=nn.initializers.xavier_normal())(x_in)
+        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
+        scale, shift = TimeEmbeddingMLP(input_dim, self.act_fn)(t_emb)
+        x = x * (1.0 + scale) + shift
+        x = x_in + get_act_fn(self.act_fn)(x)
+        x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
+        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
+        x = get_act_fn(self.act_fn)(x)
+        if self.batchnorm:
+            x = nn.BatchNorm(use_running_average=not train)(x)
+        else:
+            x = nn.LayerNorm()(x)
+        return x
+
+
+class TimeEmbeddingMLP(nn.Module):
+    output_dim: int
+    act_fn: str
+
+    @nn.compact
+    def __call__(self, t_emb: jnp.ndarray) -> jnp.ndarray:
+        scale_shift = nn.Dense(
+            2 * self.output_dim, kernel_init=nn.initializers.xavier_uniform()
+        )(t_emb)
+        scale, shift = jnp.array_split(scale_shift, 2, axis=-1)
+        return scale, shift
+
+
+class ScoreUNet(nn.Module):
+    output_dim: int
+    time_embedding_dim: int
+    encoding_dim: int
+    act_fn: str
+    encoder_layer_dims: Sequence[int]
+    decoder_layer_dims: Sequence[int]
+    batchnorm: bool = False
+    dropout_prob: float = 0.0
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
+        t_emb = get_time_step_embedding(t, self.time_embedding_dim)
+        x = nn.Dense(
+            self.time_embedding_dim, kernel_init=nn.initializers.xavier_uniform()
+        )(x)
+
+        # downsample
+        downs = []
+        for dim in self.encoder_layer_dims:
+            x = Downsample(
+                output_dim=dim,
+                act_fn=self.act_fn,
+                batchnorm=self.batchnorm,
+                dropout_prob=self.dropout_prob,
+            )(x, t_emb, train)
+            downs.append(x)
+
+        # bottleneck
+        x_out = nn.Dense(
+            self.encoding_dim, kernel_init=nn.initializers.xavier_uniform()
+        )(x)
+        x_out = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
+        x = x + get_act_fn(self.act_fn)(x_out)
+
+        # upsample
+        for dim, down in zip(self.decoder_layer_dims, downs[::-1]):
+            x = Upsample(
+                output_dim=dim,
+                act_fn=self.act_fn,
+                batchnorm=self.batchnorm,
+                dropout_prob=self.dropout_prob,
+            )(x, down, t_emb, train)
+
+        # out
+        score = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_uniform())(
+            x
+        )
+        return score
+
+
 if __name__ == "__main__":
-    times = jnp.linspace(0, 1, 100)
-    time_embeddings = get_time_step_embedding(times, 16)
-    plt.imshow(time_embeddings.T, aspect="auto")
-    plt.show()
+    x = jnp.ones((2, 32))
+    t = jnp.ones((2,))
+    net = ScoreUNet(
+        output_dim=32,
+        time_embedding_dim=32,
+        encoding_dim=8,
+        act_fn="elu",
+        encoder_layer_dims=[16, 8],
+        decoder_layer_dims=[8, 16],
+        batchnorm=True,
+        dropout_prob=0.1,
+    )
+    key1, key2 = jax.random.split(jax.random.PRNGKey(0), 2)
+    variable = net.init({"params": key1, "dropout": key2}, x=x, t=t, train=True)
+    params = variable["params"]
+    batch_stats = variable["batch_stats"] if "batch_stats" in variable else {}
+    score = net.apply(
+        {"params": params, "batch_stats": batch_stats},
+        x=x,
+        t=t,
+        train=False,
+        mutable=False,
+    )
+    print(score.shape)
