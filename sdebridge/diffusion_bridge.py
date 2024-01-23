@@ -12,6 +12,7 @@ class DiffusionBridge:
     def __init__(self, sde: SDE):
         self.sde = sde
 
+    @partial(jax.jit, static_argnums=(0, 2), backend='cpu')
     def simulate_forward_process(
         self,
         initial_val: jnp.ndarray,
@@ -37,7 +38,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4))
+    @partial(jax.jit, static_argnums=(0, 3, 4), backend='cpu')
     def simulate_backward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -73,7 +74,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4))
+    @partial(jax.jit, static_argnums=(0, 3, 4), backend='cpu')
     def simulate_forward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -201,6 +202,8 @@ class DiffusionBridge:
             )  # (B*N, 1)
             score_p_gradients = flatten_batch(gradients)  # (B*N, d)
             trajectories = flatten_batch(trajectories)  # (B*N, d)
+
+
             covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, d, d)
 
             def loss_fn(params) -> tuple:
