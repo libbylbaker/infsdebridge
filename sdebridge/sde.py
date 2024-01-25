@@ -125,10 +125,10 @@ class SDE(abc.ABC):
         """Diffusion term of the SDE"""
         raise NotImplementedError
 
-    @abc.abstractmethod
     def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """covariance term: \sigma @ \sigma^T"""
-        raise NotImplementedError
+        _diffusion = self.diffusion(val, time, **kwargs)
+        return jnp.matmul(_diffusion, _diffusion.T)
 
     def inv_covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> jnp.ndarray:
         """inverse covariance term: (\sigma @ \sigma^T)^{-1}"""
