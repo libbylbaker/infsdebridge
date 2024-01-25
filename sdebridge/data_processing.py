@@ -70,3 +70,21 @@ def butterfly2_pts():
     path_b2 = "../data/inverted_butterfly2.png"
     remove_pts_b2 = -70
     return _interpolate(path_b2, remove_pts_b2)
+
+
+def butterfly_bw_pts():
+    path_b2 = "../data/inverted_butterfly_bw.png"
+    remove_pts_b2 = -1
+    return _interpolate(path_b2, remove_pts_b2)
+
+
+def butterfly_honrathi_pts():
+    path_b2 = "../data/inverted_butterfly_honrathi.jpg"
+    remove_pts_b2 = -38
+    return _interpolate(path_b2, remove_pts_b2)
+
+
+def butterfly_amasina_pts():
+    path_b2 = "../data/inverted_butterfly_amasina.png"
+    remove_pts_b2 = -73
+    return _interpolate(path_b2, remove_pts_b2)
