@@ -32,7 +32,7 @@ class DiffusionBridge:
                             "scaled_stochastic_increments": jax.Array, (B, N, d) approximation of gradients,
                             "step_rngs": jax.Array, (B, N) random number generators}
         """
-        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
+        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1, 1))
         results = euler_maruyama(
             sde=self.sde, initial_vals=initial_vals, terminal_vals=None, rng_key=rng_key
         )
@@ -62,8 +62,8 @@ class DiffusionBridge:
         !!! N.B. trajectories = [Z*(T), ..., Z*(0)], which is opposite to expected simulate_backward_bridge !!!
         !!! N.B. scaled_stochastic_increments is also therefore exactly the opposite to what's given in simulate backward bridge!!!
         """
-        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
-        terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1))
+        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1, 1 ))
+        terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1, 1))
 
         reverse_sde = self.sde.reverse_sde(score_func=score_p)
         results = euler_maruyama(
@@ -97,8 +97,8 @@ class DiffusionBridge:
                       "step_rngs": jax.Array, (B, N) random number generators}
         """
 
-        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
-        terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1))
+        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1, 1))
+        terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1, 1))
 
         bridge_sde = self.sde.bridge_sde(score_func=score_h)
         results = euler_maruyama(

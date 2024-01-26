@@ -69,6 +69,39 @@ def matern_Q_kernel(
     Q = Q.reshape(2 * num_landmarks, 2 * num_landmarks)
     return Q
 
+def evaluate_S(S: jnp.ndarray, n: int) -> jnp.ndarray:
+    S_coeffs = jnp.fft.rfft(S, norm="forward", axis=0)
+    S_eval = jnp.fft.irfft(S_coeffs, n=n, norm="forward", axis=0)
+    return S_eval
+
+def gaussian_kernel_2d(x: jnp.ndarray, y: jnp.ndarray, sigma: float, alpha: float) -> jnp.ndarray:
+    return alpha * jnp.exp(-jnp.linalg.norm(x - y, axis=-1) ** 2 / (2 * sigma ** 2))
+
+@partial(jax.jit, static_argnums=(2, 3))
+def gaussian_Q_fft(fourier_coeffs: jnp.ndarray, init_S: jnp.ndarray, alpha: float, sigma: float) -> jnp.ndarray:
+    n_bases = fourier_coeffs.shape[0]
+    guassian_kernel = partial(gaussian_kernel_2d, sigma=sigma, alpha=alpha)
+    init_S_eval = evaluate_S(init_S, n=n_bases)
+
+    def evaluate_Q(fourier_coeffs: jnp.ndarray) -> jnp.ndarray:
+        ks = jnp.fft.fftfreq(n_bases, d=1.0/(2.0*np.pi))  # (n_bases, )
+        kks = jnp.stack(jnp.meshgrid(ks, ks, indexing='ij'), axis=-1)
+        S_eval = jnp.fft.irfft(fourier_coeffs, norm="forward", n=n_bases, axis=0) + init_S_eval   # (n_bases, 2)
+        Q_eval = vmap(
+            vmap(
+                vmap(guassian_kernel, 
+                        (None, 0), 
+                        0), 
+                (None, 1), 
+                1), 
+            (0, None), 
+            0)(S_eval, kks)
+        return Q_eval
+    
+    Q_eval = evaluate_Q(fourier_coeffs)
+    Q_coeffs = jnp.fft.fftn(Q_eval, norm="forward", axes=(0, 1, 2))
+    Q_coeffs = Q_coeffs.reshape(n_bases, -1)
+    return Q_coeffs
 
 class SDE(abc.ABC):
     """Abstract base class for SDEs."""
@@ -207,9 +240,6 @@ class BrownianSDE(SDE):
     def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
         return self.alpha * jnp.eye(self.dim)
 
-    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return jnp.dot(self.diffusion(val, time), self.diffusion(val, time).T)
-
 
 class DampedBrownianSDE(SDE):
     def __init__(self, config):
@@ -233,9 +263,6 @@ class DampedBrownianSDE(SDE):
                 [jnp.arange(1, self.dim // 2 + 1), jnp.arange(1, self.dim // 2 + 1)]
             )
         )
-
-    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return jnp.dot(self.diffusion(val, time), self.diffusion(val, time).T)
 
 
 class GaussianKernelSDE(SDE):
@@ -263,9 +290,6 @@ class GaussianKernelSDE(SDE):
 
     def diffusion(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
         return gaussian_Q_half_kernel(landmarks=val, alpha=self.alpha, sigma=self.sigma)
-
-    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return gaussian_Q_kernel(landmarks=val, alpha=self.alpha, sigma=self.sigma)
 
 
 class MaternKernelSDE(SDE):
@@ -303,15 +327,36 @@ class MaternKernelSDE(SDE):
         return matern_Q_kernel(landmarks=val, sigma=self.sigma, rho=self.rho, p=self.p)
 
 
-class CustomizedSDE(SDE):
+class FourierGaussianKernelSDE(SDE):
     def __init__(self, config: ConfigDict):
         super().__init__(config)
 
-    def drift(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return self.config.drift(val=val, time=time, **kwargs)
+    @property
+    def alpha(self) -> float:
+        return self.config.alpha
+    
+    @alpha.setter
+    def alpha(self, value: float):
+        self.config.alpha = value
+    
+    @property
+    def sigma(self) -> float:
+        return self.config.sigma
+    
+    @sigma.setter
+    def sigma(self, value: float):
+        self.config.sigma = value
 
-    def diffusion(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return self.config.diffusion(val=val, time=time, **kwargs)
+    @property
+    def init_S(self) -> jnp.ndarray:
+        return self.config.init_S
+    
+    @init_S.setter
+    def init_S(self, value: jnp.ndarray):
+        self.config.init_S = value
 
-    def covariance(self, val: ArrayLike, time: ArrayLike, **kwargs) -> ndarray:
-        return self.config.covariance(val=val, time=time, **kwargs)
+    def drift(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
+        return jnp.zeros_like(val, dtype=jnp.complex64)
+    
+    def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
+        return gaussian_Q_fft(val, self.init_S, self.alpha, self.sigma)
