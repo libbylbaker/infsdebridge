@@ -138,6 +138,15 @@ class SDE(abc.ABC):
         self.config.dim = value
 
     @property
+    def n_bases(self) -> int:
+        """number of bases"""
+        return self.config.n_bases
+    
+    @n_bases.setter
+    def n_bases(self, value: int):
+        self.config.n_bases = value
+
+    @property
     def dt(self) -> float:
         """time step size"""
         return self.T / self.N

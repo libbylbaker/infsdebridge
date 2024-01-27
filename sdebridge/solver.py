@@ -103,8 +103,8 @@ def euler_maruyama(
         _drift = vmap(sde.drift, in_axes=(0, None))(state.vals, time)  # (B, N, 2)
         drift_step = _drift * sde.dt
         
-        n_batches, n_bases, dim = state.vals.shape
-        _brownian = random.normal(step_key, shape=(n_batches, n_bases**2, dim))  # (B, N^2, 2)
+        n_batches = state.vals.shape[0]
+        _brownian = random.normal(step_key, shape=(n_batches, sde.n_bases**2, sde.dim))  # (B, N^2, 2)
         brownian_step = _brownian * jnp.sqrt(sde.dt)
 
         _diffusion = vmap(sde.diffusion, in_axes=(0, None))(

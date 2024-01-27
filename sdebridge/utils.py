@@ -22,14 +22,8 @@ def unsqueeze(x: jax.Array, axis: int):
     return jnp.expand_dims(x, axis=axis)
 
 
-def sparseify(x: jnp.ndarray, num_adjacent_nbs: int):
-    x_copy = x.copy()
-    for n in range(num_adjacent_nbs + 1, len(x) - num_adjacent_nbs):
-        # Set the elements at the diagonal `n` away from the main diagonal to zero
-        x_copy -= jnp.diagflat(jnp.diag(x_copy, k=n), k=n)
-        x_copy -= jnp.diagflat(jnp.diag(x_copy, k=-n), k=-n)
-    return x_copy
-
+complex_to_real = lambda z: jnp.concatenate([jnp.real(z), jnp.imag(z)], axis=-1)
+real_to_complex = lambda x: x[..., :2] + 1j * x[..., 2:]
 
 ### Network helpers
 @struct.dataclass
@@ -97,6 +91,8 @@ def create_train_state(
 def eval_score(state: TrainState, val: jax.Array, time: ArrayLike) -> jax.Array:
     assert len(val.shape) == 1
     time = jnp.array(time)
+    val = complex_to_real(val)      # (B, n_bases, 2) -> (B, n_bases, 2*2)
+    val = rearrange(val, 'b n d -> b (n d)')
     score = state.apply_fn(
         {"params": state.params, "batch_stats": state.batch_stats},
         x=val,

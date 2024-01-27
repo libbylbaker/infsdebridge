@@ -170,10 +170,12 @@ class DiffusionBridge:
         else:
             raise NotImplementedError
 
+        b_size = training_params["batch_size"]
+
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 
         data_generator = self.get_trajectories_generator(
-            batch_size=training_params["batch_size"],
+            batch_size=b_size,
             process_type="forward",
             initial_val=initial_val,
             terminal_val=None,
@@ -184,27 +186,30 @@ class DiffusionBridge:
 
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
-            dtype=(tf.float32, tf.float32),
+            dtype=(tf.complex64, tf.complex64),
             shape=[
-                (training_params["batch_size"], self.sde.N, self.sde.dim),
-                (training_params["batch_size"], self.sde.N, self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases, self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases, self.sde.dim),
             ],
         )
 
         @jax.jit
         def train_step(state: TrainState, batch: tuple) -> TrainState:
-            trajectories, gradients = batch
-            ts = flatten_batch(
-                unsqueeze(
-                    jnp.tile(self.sde.ts[1:], reps=(training_params["batch_size"], 1)),
-                    axis=-1,
-                )
-            )  # (B*N, 1)
-            score_p_gradients = flatten_batch(gradients)  # (B*N, d)
-            trajectories = flatten_batch(trajectories)  # (B*N, d)
+            trajectories, gradients = batch # (B, N, n_bases, 2)
+            ts = rearrange(
+                repeat(self.sde.ts[1:], 'n -> b n', b=b_size), 
+                'b n -> (b n) 1', 
+                b=b_size
+            )
+            # covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B, N, n_bases, n_bases)
+
+            trajectories = complex_to_real(trajectories)  # (B, N, n_bases, 2) -> (B, N, n_bases, 2*2)
+            gradients = complex_to_real(gradients)      # (B, N, n_bases, 2) -> (B, N, n_bases, 2*2)
+            # covariances = complex_to_real(covariances)  # (B, N, n_bases*2) -> (B, N, n_bases, 2*2)
+            trajectories = rearrange(trajectories, 'b t n d -> (b t) (n d)')  # (B*N, 2*2*n_bases)
+            gradients = rearrange(gradients, 'b t n d -> (b t) (n d)')  # (B*N, 2*2*n_bases)
 
 
-            covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, d, d)
 
             def loss_fn(params) -> tuple:
                 score_p_est, updates = state.apply_fn(
@@ -215,9 +220,10 @@ class DiffusionBridge:
                     mutable=["batch_stats"],
                     rngs={"dropout": state.key},
                 )  # (B*N, d)
-                loss = weighted_norm_square(
-                    x=score_p_est - score_p_gradients, weight=covariances
-                )  # (B*N, d) -> (B*N, )
+                # loss = weighted_norm_square(
+                #     x=score_p_est - gradients, weight=covariances
+                # )  # (B*N, d) -> (B*N, )
+                loss = jnp.mean(jnp.square(score_p_est - gradients), axis=-1)
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
@@ -237,8 +243,8 @@ class DiffusionBridge:
             model=score_p_net,
             rng_key=network_init_rng_key,
             input_shapes=[
-                (training_params["batch_size"], self.sde.dim),
-                (training_params["batch_size"], 1),
+                (b_size, self.sde.dim*self.sde.n_bases*2),
+                (b_size, 1),
             ],
             learning_rate=training_params["learning_rate"],
             warmup_steps=training_params["warmup_steps"],

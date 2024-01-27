@@ -2,14 +2,17 @@ from typing import Any
 
 from flax import linen as nn
 
-from .setup import *
+# from .setup import *
 
-# import jax.numpy as jnp
-# from jax.typing import ArrayLike
-# from typing import Sequence
-# import math
-# import jax
+import jax.numpy as jnp
+from jax.typing import ArrayLike
+from typing import Sequence
+import math
+import jax
+from functools import partial
 
+dense = partial(nn.Dense,
+                )
 
 def scaled_dot_product(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
     dim_k = q.shape[-1]
@@ -56,69 +59,6 @@ def get_act_fn(name: str) -> nn.activation:
         return nn.sigmoid
     else:
         raise ValueError(f"Activation {name} not recognized.")
-
-
-class MLP(nn.Module):
-    output_dim: int
-    act_fn: str
-    layer_dims: Sequence[int]
-    batchnorm: bool = False
-    dropout_prob: float = 0.0
-
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, train: bool) -> jnp.ndarray:
-        for dim in self.layer_dims:
-            x = nn.Dense(dim, kernel_init=nn.initializers.xavier_normal())(x)
-            x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-            x = x + get_act_fn(self.act_fn)(x)
-            if self.batchnorm:
-                x = nn.BatchNorm(use_running_average=not train)(x)
-            else:
-                x = nn.LayerNorm()(x)
-
-        x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
-        return x
-
-class ScoreNet(nn.Module):
-    output_dim: int
-    time_embedding_dim: int
-    encoding_dim: int
-    act_fn: str
-    encoder_layer_dims: Sequence[int]
-    decoder_layer_dims: Sequence[int]
-    batchnorm: bool = False
-    dropout_prob: float = 0.0
-
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
-        t = get_time_step_embedding(t, self.time_embedding_dim)
-        t = MLP(
-            output_dim=self.encoding_dim,
-            act_fn=self.act_fn,
-            layer_dims=self.encoder_layer_dims,
-            batchnorm=self.batchnorm,
-            dropout_prob=self.dropout_prob,
-        )(t, train)
-
-        x = MLP(
-            output_dim=self.encoding_dim,
-            act_fn=self.act_fn,
-            layer_dims=self.encoder_layer_dims,
-            batchnorm=self.batchnorm,
-            dropout_prob=self.dropout_prob,
-        )(x, train)
-
-        xt = jnp.concatenate([x, t], axis=-1)
-
-        score = MLP(
-            output_dim=self.output_dim,
-            act_fn=self.act_fn,
-            layer_dims=self.decoder_layer_dims,
-            batchnorm=self.batchnorm,
-            dropout_prob=self.dropout_prob,
-        )(xt, train)
-
-        return score
 
 
 class Upsample(nn.Module):
@@ -238,8 +178,8 @@ class ScoreUNet(nn.Module):
 
 
 if __name__ == "__main__":
-    x = jnp.ones((2, 32))
-    t = jnp.ones((2,))
+    x = jnp.ones((4, 2, 16), dtype=jnp.complex64)
+    t = jnp.ones((4, 2, 1), dtype=jnp.float32)
     net = ScoreUNet(
         output_dim=32,
         time_embedding_dim=32,
@@ -262,3 +202,4 @@ if __name__ == "__main__":
         mutable=False,
     )
     print(score.shape)
+    print(score.dtype)
