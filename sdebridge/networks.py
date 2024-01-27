@@ -2,45 +2,53 @@ from typing import Any
 
 from flax import linen as nn
 
-# from .setup import *
+from .setup import *
 
-import jax.numpy as jnp
-from jax.typing import ArrayLike
-from typing import Sequence
-import math
-import jax
-from functools import partial
-
-dense = partial(nn.Dense,
-                )
-
-def scaled_dot_product(q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray) -> jnp.ndarray:
-    dim_k = q.shape[-1]
-    attn_scores = jnp.matmul(q, jnp.swapaxes(k, -2, -1)) / math.sqrt(dim_k)
-    attn = nn.softmax(attn_scores, axis=-1)
-    values = jnp.matmul(attn, v)
-    return values
-
+# import numpy as np
+# import jax.numpy as jnp
+# from typing import Sequence, Callable
+# import math
+# import jax
+# from functools import partial
+# from clu import parameter_overview
 
 def get_time_step_embedding(
-    time_steps: ArrayLike,
+    t: float,
     embedding_dim: int,
-    max_period: int = 10000,
-    scaling_factor: float = 2000.0,
+    max_period: float = 128.0,
+    scaling: float = 100.0,
 ) -> jnp.ndarray:
-    def encode_scalar(t: ArrayLike) -> jnp.ndarray:
-        k = embedding_dim // 2
-        emb = jnp.log(max_period) / (k - 1)
-        emb = jnp.exp(jnp.arange(k, dtype=jnp.float32) * -emb)
-        emb = scaling_factor * t * emb
-        emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
-        return emb
+    """ Embed scalar time steps into a vector of size `embedding_dim`"""
+    emb = jnp.empty((embedding_dim, ), dtype=jnp.float32)
+    div_term = jnp.exp(jnp.arange(0, embedding_dim, 2, dtype=jnp.float32) * (-math.log(max_period) / embedding_dim))
+    emb = emb.at[0::2].set(jnp.sin(scaling * t * div_term))
+    emb = emb.at[1::2].set(jnp.cos(scaling * t * div_term))
+    return emb
 
-    if len(time_steps.shape) == 0 or time_steps.shape[0] == 1:
-        return encode_scalar(time_steps)
-    else:
-        return jax.vmap(encode_scalar)(time_steps)
+class ComplexDense(nn.Module):
+    features: int
+    dtype: Any = jnp.float32
+    param_dtype: Any = jnp.float32
+    kernel_init: Callable = nn.initializers.xavier_normal()
+    bias_init: Callable = nn.initializers.zeros
 
+    @nn.compact
+    def __call__(self, x_real: jnp.ndarray, x_imag: jnp.ndarray) -> jnp.ndarray:
+        x_real = nn.Dense(
+            features=self.features,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(x_real)
+        x_imag = nn.Dense(
+            features=self.features,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            kernel_init=self.kernel_init,
+            bias_init=self.bias_init,
+        )(x_imag)
+        return x_real, x_imag
 
 def get_act_fn(name: str) -> nn.activation:
     if name == "relu":
@@ -60,59 +68,6 @@ def get_act_fn(name: str) -> nn.activation:
     else:
         raise ValueError(f"Activation {name} not recognized.")
 
-
-class Upsample(nn.Module):
-    output_dim: int
-    act_fn: str
-    batchnorm: bool = False
-    dropout_prob: float = 0.0
-
-    @nn.compact
-    def __call__(
-        self, x1: jnp.ndarray, x2: jnp.ndarray, t_emb: jnp.ndarray, train: bool
-    ) -> jnp.ndarray:
-        x_in = jnp.concatenate([x1, x2], axis=-1)
-        input_dim = x_in.shape[-1]
-        x = nn.Dense(input_dim, kernel_init=nn.initializers.xavier_normal())(x_in)
-        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-        scale, shift = TimeEmbeddingMLP(input_dim, self.act_fn)(t_emb)
-        x = x * (1.0 + scale) + shift
-        x = x_in + get_act_fn(self.act_fn)(x)
-        x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
-        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-        x = get_act_fn(self.act_fn)(x)
-        if self.batchnorm:
-            x = nn.BatchNorm(use_running_average=not train)(x)
-        else:
-            x = nn.LayerNorm()(x)
-        return x
-
-
-class Downsample(nn.Module):
-    output_dim: int
-    act_fn: str
-    batchnorm: bool = False
-    dropout_prob: float = 0.0
-
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, t_emb: jnp.ndarray, train: bool) -> jnp.ndarray:
-        x_in = x
-        input_dim = x_in.shape[-1]
-        x = nn.Dense(input_dim, kernel_init=nn.initializers.xavier_normal())(x_in)
-        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-        scale, shift = TimeEmbeddingMLP(input_dim, self.act_fn)(t_emb)
-        x = x * (1.0 + scale) + shift
-        x = x_in + get_act_fn(self.act_fn)(x)
-        x = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_normal())(x)
-        x = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-        x = get_act_fn(self.act_fn)(x)
-        if self.batchnorm:
-            x = nn.BatchNorm(use_running_average=not train)(x)
-        else:
-            x = nn.LayerNorm()(x)
-        return x
-
-
 class TimeEmbeddingMLP(nn.Module):
     output_dim: int
     act_fn: str
@@ -120,86 +75,129 @@ class TimeEmbeddingMLP(nn.Module):
     @nn.compact
     def __call__(self, t_emb: jnp.ndarray) -> jnp.ndarray:
         scale_shift = nn.Dense(
-            2 * self.output_dim, kernel_init=nn.initializers.xavier_uniform()
+            2 * self.output_dim,
+            kernel_init=nn.initializers.xavier_normal()
         )(t_emb)
         scale, shift = jnp.array_split(scale_shift, 2, axis=-1)
         return scale, shift
 
+class Downsample(nn.Module):
+    output_dim: int
+    act_fn: str
+
+    @nn.compact
+    def __call__(self, x_real: jnp.ndarray, x_imag: jnp.ndarray, t_emb: jnp.ndarray, train: bool) -> jnp.ndarray:
+        x_real_res, x_imag_res = ComplexDense(self.output_dim)(x_real, x_imag)
+        x_real, x_imag = ComplexDense(self.output_dim)(x_real, x_imag)
+
+        scale, shift = TimeEmbeddingMLP(self.output_dim,
+                                        self.act_fn)(t_emb)
+        x_real = x_real * (1.0 + scale) + shift
+        x_imag = x_imag * (1.0 + scale) + shift
+        x_real = get_act_fn(self.act_fn)(x_real)
+        x_imag = get_act_fn(self.act_fn)(x_imag)
+
+        x_real = x_real + x_real_res
+        x_imag = x_imag + x_imag_res
+
+        x_real = nn.LayerNorm()(x_real)
+        x_imag = nn.LayerNorm()(x_imag)
+        return x_real, x_imag
+    
+class Upsample(nn.Module):
+    output_dim: int
+    act_fn: str
+
+    @nn.compact
+    def __call__(
+        self, x_real: jnp.ndarray, x_imag: jnp.ndarray, x_real_skip: jnp.ndarray, x_imag_skip: jnp.ndarray, t_emb: jnp.ndarray, train: bool
+    ) -> jnp.ndarray:
+        x_real = jnp.concatenate([x_real, x_real_skip], axis=-1)
+        x_imag = jnp.concatenate([x_imag, x_imag_skip], axis=-1)
+        
+        x_real_res, x_imag_res = ComplexDense(self.output_dim)(x_real, x_imag)
+        x_real, x_imag = ComplexDense(self.output_dim)(x_real, x_imag)
+
+        scale, shift = TimeEmbeddingMLP(self.output_dim, 
+                                        self.act_fn)(t_emb)
+        x_real = x_real * (1.0 + scale) + shift
+        x_imag = x_imag * (1.0 + scale) + shift
+        x_real = get_act_fn(self.act_fn)(x_real)
+        x_imag = get_act_fn(self.act_fn)(x_imag)
+
+        x_real = x_real + x_real_res
+        x_imag = x_imag + x_imag_res
+
+        x_real = nn.LayerNorm()(x_real)
+        x_imag = nn.LayerNorm()(x_imag)
+        return x_real, x_imag
 
 class ScoreUNet(nn.Module):
     output_dim: int
     time_embedding_dim: int
-    encoding_dim: int
+    bottleneck_dim: int
     act_fn: str
     encoder_layer_dims: Sequence[int]
     decoder_layer_dims: Sequence[int]
-    batchnorm: bool = False
-    dropout_prob: float = 0.0
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
-        t_emb = get_time_step_embedding(t, self.time_embedding_dim)
-        x = nn.Dense(
-            self.time_embedding_dim, kernel_init=nn.initializers.xavier_uniform()
-        )(x)
+    def __call__(self, x_real: jnp.ndarray, x_imag: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
+        t_emb = jax.vmap(
+            partial(get_time_step_embedding,
+                    embedding_dim=self.time_embedding_dim)
+            )(t)
+        x_real, x_imag = ComplexDense(self.time_embedding_dim)(x_real, x_imag)
 
         # downsample
-        downs = []
+        x_reals, x_imags = [], []
         for dim in self.encoder_layer_dims:
-            x = Downsample(
+            x_real, x_imag = Downsample(
                 output_dim=dim,
-                act_fn=self.act_fn,
-                batchnorm=self.batchnorm,
-                dropout_prob=self.dropout_prob,
-            )(x, t_emb, train)
-            downs.append(x)
+                act_fn=self.act_fn
+            )(x_real, x_imag, t_emb, train)
+            x_reals.append(x_real)
+            x_imags.append(x_imag)
 
         # bottleneck
-        x_out = nn.Dense(
-            self.encoding_dim, kernel_init=nn.initializers.xavier_uniform()
-        )(x)
-        x_out = nn.Dropout(rate=self.dropout_prob)(x, deterministic=not train)
-        x = x + get_act_fn(self.act_fn)(x_out)
+        x_real, x_imag = ComplexDense(self.bottleneck_dim)(x_real, x_imag)
+        x_real = get_act_fn(self.act_fn)(x_real)
+        x_imag = get_act_fn(self.act_fn)(x_imag)
 
         # upsample
-        for dim, down in zip(self.decoder_layer_dims, downs[::-1]):
-            x = Upsample(
+        for dim, x_real_skip, x_imag_skip in zip(self.decoder_layer_dims[::-1], x_reals[::-1], x_imags[::-1]):
+            x_real, x_imag = Upsample(
                 output_dim=dim,
                 act_fn=self.act_fn,
-                batchnorm=self.batchnorm,
-                dropout_prob=self.dropout_prob,
-            )(x, down, t_emb, train)
+            )(x_real, x_imag, x_real_skip, x_imag_skip, t_emb, train)
 
         # out
-        score = nn.Dense(self.output_dim, kernel_init=nn.initializers.xavier_uniform())(
-            x
-        )
-        return score
+        score_real, score_imag = ComplexDense(self.output_dim)(x_real, x_imag)
+        return score_real, score_imag
 
 
 if __name__ == "__main__":
-    x = jnp.ones((4, 2, 16), dtype=jnp.complex64)
-    t = jnp.ones((4, 2, 1), dtype=jnp.float32)
+    x = jnp.ones((8, 16), dtype=jnp.complex64)
+    x_real, x_imag = x.real, x.imag
+    t = jnp.ones((8, 1), dtype=jnp.float32)
     net = ScoreUNet(
-        output_dim=32,
+        output_dim=16,
         time_embedding_dim=32,
-        encoding_dim=8,
+        bottleneck_dim=8,
         act_fn="elu",
         encoder_layer_dims=[16, 8],
         decoder_layer_dims=[8, 16],
-        batchnorm=True,
-        dropout_prob=0.1,
     )
-    key1, key2 = jax.random.split(jax.random.PRNGKey(0), 2)
-    variable = net.init({"params": key1, "dropout": key2}, x=x, t=t, train=True)
-    params = variable["params"]
-    batch_stats = variable["batch_stats"] if "batch_stats" in variable else {}
-    score = net.apply(
-        {"params": params, "batch_stats": batch_stats},
-        x=x,
+    key = jax.random.PRNGKey(0)
+    params = net.init(key, x_real=x_real, x_imag=x_imag, t=t, train=True)["params"]
+    print(parameter_overview.get_parameter_overview(params))
+    score_real, score_imag = net.apply(
+        {"params": params},
+        x_real=x_real,
+        x_imag=x_imag,
         t=t,
         train=False,
-        mutable=False,
     )
-    print(score.shape)
-    print(score.dtype)
+    print(score_real.shape)
+    print(score_imag.shape)
+    print(score_real.dtype)
+    print(score_imag.dtype)

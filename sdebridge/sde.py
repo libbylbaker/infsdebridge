@@ -35,40 +35,6 @@ def gaussian_Q_kernel(
     Q = Q.reshape(2 * num_landmarks, 2 * num_landmarks)
     return Q
 
-
-def matern_kernel(d: jnp.ndarray, sigma: float, rho: float, p: int = 2) -> jnp.ndarray:
-    d = jnp.sqrt(jnp.sum(jnp.square(d), axis=-1))
-    if p == 0:
-        return sigma**2 * jnp.exp(-d / rho)
-    elif p == 1:
-        return (
-            sigma**2 * (1 + jnp.sqrt(3) * d / rho) * jnp.exp(-jnp.sqrt(3) * d / rho)
-        )
-    elif p == 2:
-        return (
-            sigma**2
-            * (1 + jnp.sqrt(5) * d / rho + 5 * d**2 / (3 * rho**2))
-            * jnp.exp(-jnp.sqrt(5) * d / rho)
-        )
-    else:
-        raise NotImplementedError
-
-
-def matern_Q_kernel(
-    landmarks: jnp.ndarray, sigma: float, rho: float, p: int
-) -> jnp.ndarray:
-    xy_coords = landmarks.reshape(-1, 2)
-    num_landmarks = xy_coords.shape[0]
-    kernel = matern_kernel(
-        d=xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :],
-        sigma=sigma,
-        rho=rho,
-        p=p,
-    )
-    Q = jnp.einsum("ij,kl->ikjl", kernel, jnp.eye(2))
-    Q = Q.reshape(2 * num_landmarks, 2 * num_landmarks)
-    return Q
-
 def evaluate_S(S: jnp.ndarray, n: int) -> jnp.ndarray:
     S_coeffs = jnp.fft.rfft(S, norm="forward", axis=0)
     S_eval = jnp.fft.irfft(S_coeffs, n=n, norm="forward", axis=0)
@@ -78,15 +44,17 @@ def gaussian_kernel_2d(x: jnp.ndarray, y: jnp.ndarray, sigma: float, alpha: floa
     return alpha * jnp.exp(-jnp.linalg.norm(x - y, axis=-1) ** 2 / (2 * sigma ** 2))
 
 @partial(jax.jit, static_argnums=(2, 3))
-def gaussian_Q_fft(fourier_coeffs: jnp.ndarray, init_S: jnp.ndarray, alpha: float, sigma: float) -> jnp.ndarray:
-    n_bases = fourier_coeffs.shape[0]
+def gaussian_Q_fft(coeffs_flatten: jnp.ndarray, init_S_flatten: jnp.ndarray, alpha: float, sigma: float) -> jnp.ndarray:
+    coeffs = coeffs_flatten.reshape(-1, 2)   # (n_bases, 2)
+    init_S = init_S_flatten.reshape(-1, 2)   # (n_bases, 2)
+    n_bases = coeffs.shape[0]
     guassian_kernel = partial(gaussian_kernel_2d, sigma=sigma, alpha=alpha)
-    init_S_eval = evaluate_S(init_S, n=n_bases)
+    init_S_eval = evaluate_S(init_S, n=n_bases) # (n_bases, 2)
 
-    def evaluate_Q(fourier_coeffs: jnp.ndarray) -> jnp.ndarray:
+    def evaluate_Q(coeffs: jnp.ndarray) -> jnp.ndarray:
         ks = jnp.fft.fftfreq(n_bases, d=1.0/(2.0*np.pi))  # (n_bases, )
-        kks = jnp.stack(jnp.meshgrid(ks, ks, indexing='ij'), axis=-1)
-        S_eval = jnp.fft.irfft(fourier_coeffs, norm="forward", n=n_bases, axis=0) + init_S_eval   # (n_bases, 2)
+        kks = jnp.stack(jnp.meshgrid(ks, ks, indexing='ij'), axis=-1)   # (n_bases, n_bases, 2)
+        S_eval = jnp.fft.irfft(coeffs, norm="forward", n=n_bases, axis=0) + init_S_eval   # (n_bases, 2)
         Q_eval = vmap(
             vmap(
                 vmap(guassian_kernel, 
@@ -96,12 +64,12 @@ def gaussian_Q_fft(fourier_coeffs: jnp.ndarray, init_S: jnp.ndarray, alpha: floa
                 1), 
             (0, None), 
             0)(S_eval, kks)
-        return Q_eval
+        return Q_eval   # (n_bases, n_bases, n_bases)
     
-    Q_eval = evaluate_Q(fourier_coeffs)
-    Q_coeffs = jnp.fft.fftn(Q_eval, norm="forward", axes=(0, 1, 2))
-    Q_coeffs = Q_coeffs.reshape(n_bases, -1)
-    return Q_coeffs
+    Q_eval = evaluate_Q(coeffs)   # (n_bases, n_bases, n_bases)
+    Q_coeffs = jnp.fft.fftn(Q_eval, norm="forward", axes=(0, 1, 2))  # (n_bases, n_bases, n_bases)
+    Q_coeffs = Q_coeffs.reshape(n_bases, -1)    # (n_bases, n_bases**2)
+    return Q_coeffs     # (n_bases, n_bases**2)
 
 class SDE(abc.ABC):
     """Abstract base class for SDEs."""
@@ -301,40 +269,6 @@ class GaussianKernelSDE(SDE):
         return gaussian_Q_half_kernel(landmarks=val, alpha=self.alpha, sigma=self.sigma)
 
 
-class MaternKernelSDE(SDE):
-    def __init__(self, config: ConfigDict):
-        super().__init__(config)
-
-    @property
-    def sigma(self) -> float:
-        return self.config.sigma
-
-    @sigma.setter
-    def sigma(self, value: float):
-        self.config.sigma = value
-
-    @property
-    def rho(self) -> float:
-        return self.config.rho
-
-    @rho.setter
-    def rho(self, value: float):
-        self.config.rho = value
-
-    @property
-    def p(self) -> int:
-        return self.config.p
-
-    @p.setter
-    def p(self, value: int):
-        self.config.p = value
-
-    def drift(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
-        return jnp.zeros_like(val)
-
-    def diffusion(self, val: jnp.ndarray, time: ArrayLike) -> jnp.ndarray:
-        return matern_Q_kernel(landmarks=val, sigma=self.sigma, rho=self.rho, p=self.p)
-
 
 class FourierGaussianKernelSDE(SDE):
     def __init__(self, config: ConfigDict):
@@ -368,4 +302,6 @@ class FourierGaussianKernelSDE(SDE):
         return jnp.zeros_like(val, dtype=jnp.complex64)
     
     def diffusion(self, val: ArrayLike, time: ArrayLike) -> jnp.ndarray:
-        return gaussian_Q_fft(val, self.init_S, self.alpha, self.sigma)
+        Q_mat = gaussian_Q_fft(val, self.init_S, self.alpha, self.sigma)
+        zero_mat = jnp.zeros_like(Q_mat)
+        return jnp.block([[Q_mat, zero_mat], [zero_mat, Q_mat]])

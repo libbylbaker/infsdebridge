@@ -83,7 +83,7 @@ def create_train_state(
         metrics=Metrics.empty(),
     )
 
-    print(parameter_overview.get_parameter_overview(params))
+    # print(parameter_overview.get_parameter_overview(params))
     return state
 
 
