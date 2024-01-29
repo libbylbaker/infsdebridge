@@ -60,7 +60,7 @@ def create_train_state(
     warmup_steps: int = 500,
     decay_steps: int = 2000,
 ) -> TrainState:
-    rng_key, params_init_rng_key, dropout_init_rng_key = random.split(rng_key, 3)
+    rng_key, params_init_rng_key, dropout_init_rng_key = jax.random.split(rng_key, 3)
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
     variables = model.init(
         {"params": params_init_rng_key, "dropout": dropout_init_rng_key},
@@ -83,24 +83,23 @@ def create_train_state(
         metrics=Metrics.empty(),
     )
 
-    # print(parameter_overview.get_parameter_overview(params))
+    print(parameter_overview.get_parameter_overview(params))
     return state
 
 
 @jax.jit
-def eval_score(state: TrainState, val: jax.Array, time: ArrayLike) -> jax.Array:
+def eval_score(state: TrainState, val: jax.Array, time: jnp.ndarray) -> jax.Array:
     assert len(val.shape) == 1
     time = jnp.array(time)
-    val = complex_to_real(val)      # (B, n_bases, 2) -> (B, n_bases, 2*2)
-    val = rearrange(val, 'b n d -> b (n d)')
-    score = state.apply_fn(
-        {"params": state.params, "batch_stats": state.batch_stats},
-        x=val,
+    val_real, val_imag = val.real, val.imag
+    score_real, score_imag = state.apply_fn(
+        {"params": state.params},
+        x_real=val_real,
+        x_imag=val_imag,
         t=time,
         train=False,
-        mutable=False,
     )
-    return score
+    return score_real + 1j * score_imag
 
 
 def get_iterable_dataset(generator: callable, dtype: any, shape: any):
@@ -120,10 +119,7 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
 
-
 @jax.vmap
-def weighted_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
-    assert x.shape[0] == weight.shape[0]
-    Wx = jnp.dot(weight, x)
-    xWx = jnp.dot(x, Wx)
-    return xWx
+def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.ndarray:
+    norm = jnp.einsum('...i,...ij,...j->...', jnp.conj(x), weight, x)
+    return jnp.abs(norm)

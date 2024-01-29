@@ -1,11 +1,15 @@
 from collections import namedtuple
-from .sde import SDE
-from .setup import *
+from functools import partial
+import jax
+import jax.numpy as jnp
 
+from .sde import SDE
+
+GDRK = jax.random.PRNGKey(0)
 
 def batch_matmul(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
     """Batch matrix multiplication"""
-    return vmap(jnp.matmul, in_axes=(0, 0), out_axes=0)(A, B)
+    return jax.vmap(jnp.matmul, in_axes=(0, 0), out_axes=0)(A, B)
 
 
 @partial(jax.jit, static_argnums=(0, ), backend='cpu')
@@ -22,47 +26,55 @@ def euler_maruyama(
     """
     enforce_terminal_constraint = terminal_vals is not None
 
-    SolverState = namedtuple("SolverState", ["vals", "grads", "step_key"])
+    SolverState = namedtuple("SolverState", ["vals", "grads", "covs", "step_key"])
     init_state = SolverState(
         vals=initial_vals,
         grads=jnp.empty_like(initial_vals),
+        covs=jnp.empty((initial_vals.shape[0], sde.dim*sde.n_bases, sde.dim*sde.n_bases), dtype=jnp.complex64),
         step_key=rng_key,
     )
 
-    def euler_maruyama_step(state: SolverState, time: ArrayLike) -> tuple:
+    def euler_maruyama_step(state: SolverState, time: jnp.ndarray) -> tuple:
         """Euler-Maruyama step, NOTE: all the calculations are over batches"""
-        step_key, _ = random.split(state.step_key)
-        _drift = vmap(sde.drift, in_axes=(0, None))(state.vals, time)  # (B, 2*N)
+        time = jnp.expand_dims(time, axis=-1)
+        time = jnp.tile(time, (state.vals.shape[0], 1))
+        step_key, _ = jax.random.split(state.step_key)
+        _drift = jax.vmap(sde.drift, in_axes=(0, 0))(state.vals, time)  # (b, 2*n_bases)
         drift_step = _drift * sde.dt
         
         n_batches = state.vals.shape[0]
-        _brownian = random.normal(step_key, shape=(n_batches, sde.dim*sde.n_bases**2))  # (B, 2*N^2)
+        _brownian = jax.random.normal(step_key, shape=(n_batches, sde.dim*sde.n_grid**2))  # (B, 2*n_grid**2)
         brownian_step = _brownian * jnp.sqrt(sde.dt)
 
-        _diffusion = vmap(sde.diffusion, in_axes=(0, None))(
+        _diffusion = jax.vmap(sde.diffusion, in_axes=(0, None))(
             state.vals, time
-        )  # (B, 2*N, 2*N^2)
-        diffusion_step = batch_matmul(_diffusion, brownian_step)  # (B, 2*N)
+        )  # (B, 2*n_bases, 2*n_grid**2)
+        diffusion_step = batch_matmul(_diffusion, brownian_step)  # (B, 2*n_bases)
 
-        _inv_covariance = vmap(sde.inv_covariance, in_axes=(0, None))(
-            state.vals, time
-        )  # (B, 2*N, 2*N)
+        _covariance = jax.vmap(sde.covariance, in_axes=(0, None))(state.vals, time) # (B, 2*n_bases, 2*n_bases)
+        _inv_covariance = jax.vmap(partial(
+            jnp.linalg.pinv,
+            hermitian=True,
+            rcond=None
+        ))(_covariance)  # (B, 2*n_bases, 2*n_bases)
 
-        grads = -batch_matmul(_inv_covariance, diffusion_step) / sde.dt  # (B, 2*N)
+        grads = -batch_matmul(_inv_covariance, diffusion_step) / sde.dt  # (B, 2*n_bases)
 
-        new_vals = state.vals + drift_step + diffusion_step  # (B, 2*N)
+        new_vals = state.vals + drift_step + diffusion_step  # (B, 2*n_bases)
         new_state = SolverState(
             vals=new_vals,
             grads=grads,
+            covs=_covariance,
             step_key=step_key,
         )
         return new_state, (
             state.vals,
             state.grads,
+            state.covs,
             state.step_key,
         )
 
-    _, (trajectories, gradients, step_keys) = jax.lax.scan(
+    _, (trajectories, gradients, covariances, step_keys) = jax.lax.scan(
         euler_maruyama_step,
         init=init_state,
         xs=(sde.ts[:-1]),
@@ -74,5 +86,6 @@ def euler_maruyama(
     return {
         "trajectories": jnp.swapaxes(trajectories, 0, 1),
         "gradients": jnp.swapaxes(gradients, 0, 1),
+        "covariances": jnp.swapaxes(covariances, 0, 1),
         "last_key": step_keys[-1],
     }

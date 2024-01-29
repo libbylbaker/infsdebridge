@@ -1,18 +1,23 @@
+from functools import partial
+from typing import Callable
+import jax
+import jax.numpy as jnp
 import tensorflow as tf
 from tqdm import tqdm
+from einops import rearrange, repeat
 
 from .networks import ScoreUNet
 from .sde import SDE
-from .setup import *
 from .solver import euler_maruyama
-from .utils import *
+from .utils import get_iterable_dataset, create_train_state, complex_weighted_norm_square
 
+GDRK = jax.random.PRNGKey(0)
 
 class DiffusionBridge:
     def __init__(self, sde: SDE):
         self.sde = sde
 
-    @partial(jax.jit, static_argnums=(0, 2), backend='cpu')
+    @partial(jax.jit, static_argnums=(0, 2), backend="cpu")
     def simulate_forward_process(
         self,
         initial_val: jnp.ndarray,
@@ -38,7 +43,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4), backend='cpu')
+    @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_backward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -74,7 +79,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4), backend='cpu')
+    @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_forward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -149,6 +154,7 @@ class DiffusionBridge:
                 yield (
                     histories["trajectories"],
                     histories["gradients"],
+                    histories["covariances"]
                 )
 
         return generator
@@ -158,7 +164,7 @@ class DiffusionBridge:
         initial_val: jnp.ndarray,
         setup_params: dict = None,
         rng_key: jax.Array = GDRK,
-    ) -> TrainState:
+    ):
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
@@ -180,16 +186,17 @@ class DiffusionBridge:
 
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
-            dtype=(tf.complex64, tf.complex64),
+            dtype=(tf.complex64, tf.complex64, tf.complex64),
             shape=[
                 (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
                 (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim, self.sde.n_bases*self.sde.dim)
             ],
         )
 
         @jax.jit
-        def train_step(state: TrainState, batch: tuple) -> TrainState:
-            trajectories, gradients = batch # (B, N, 2*n_bases)
+        def train_step(state, batch: tuple):
+            trajectories, gradients, covariances = batch # (B, N, 2*n_bases)
             ts = rearrange(
                 repeat(self.sde.ts[1:], 'n -> b n', b=b_size), 
                 'b n -> (b n) 1', 
@@ -198,28 +205,29 @@ class DiffusionBridge:
 
             trajectories = rearrange(trajectories, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
             gradients = rearrange(gradients, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
-            covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, 2*n_bases, 2*n_bases)
-
+            covariances = rearrange(covariances, 'b n d1 d2 -> (b n) d1 d2')  # (B*N, 2*n_bases, 2*n_bases)
+      
             def loss_fn(params) -> tuple:
-                score_p_est, updates = state.apply_fn(
+                score, updates = state.apply_fn(
                     {"params": params, "batch_stats": state.batch_stats},
-                    x=trajectories,
+                    x_complex=trajectories,
                     t=ts,
                     train=True,
                     mutable=["batch_stats"],
                 )  # (B*N, 2*n_bases)
-                # loss = weighted_norm_square(
-                #     x=score_p_est - gradients, weight=covariances
-                # )  # (B*N, d) -> (B*N, )
-                loss = jnp.linalg.norm(score_p_est - gradients, axis=-1)**2
+                score_real, score_imag = jnp.split(score, 2, axis=-1)
+                score_complex = score_real + 1j * score_imag
+                loss = complex_weighted_norm_square(
+                    x=score_complex - gradients, weight=covariances
+                )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
-            grad_fn = jax.value_and_grad(loss_fn, has_aux=True, holomorphic=True)
+            grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
             (loss, updates), grads = grad_fn(state.params)
             state = state.apply_gradients(grads=grads)
             state = state.replace(batch_stats=updates["batch_stats"])
-            step_rng_key, _ = random.split(state.key)
+            step_rng_key, _ = jax.random.split(state.key)
             state = state.replace(key=step_rng_key)
 
             metric_updates = state.metrics.single_from_model_output(loss=loss)
@@ -262,21 +270,18 @@ class DiffusionBridge:
         score_p: Callable,
         setup_params: dict = None,
         rng_key: jax.Array = GDRK,
-    ) -> TrainState:
+    ):
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
-        if training_params["network_type"] == "MLP":
-            score_p_star_net = ScoreNet(**net_params)
-        elif training_params["network_type"] == "UNet":
-            score_p_star_net = ScoreUNet(**net_params)
-        else:
-            raise NotImplementedError
+        score_p_star_net = ScoreUNet(**net_params)
+
+        b_size = training_params["batch_size"]
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 
         data_generator = self.get_trajectories_generator(
-            batch_size=training_params["batch_size"],
+            batch_size=b_size,
             process_type="backward_bridge",
             initial_val=initial_val,
             terminal_val=terminal_val,
@@ -287,41 +292,40 @@ class DiffusionBridge:
 
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
-            dtype=(tf.float32, tf.float32),
+            dtype=(tf.complex64, tf.complex64, tf.complex64),
             shape=[
-                (training_params["batch_size"], self.sde.N, self.sde.dim),
-                (training_params["batch_size"], self.sde.N, self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim, self.sde.n_bases*self.sde.dim)
             ],
         )
 
         @jax.jit
-        def train_step(state: TrainState, batch: tuple) -> TrainState:
-            trajectories, gradients = batch
-            ts = flatten_batch(
-                unsqueeze(
-                    jnp.tile(
-                        self.sde.T - self.sde.ts[:-1],
-                        reps=(training_params["batch_size"], 1),
-                    ),  # !!! the backward trajectories are in the reverse order, so we need inverted time series.
-                    axis=-1,
-                )
-            )  # (B*N, 1)
-            score_p_star_gradients = flatten_batch(gradients)  # (B*N, d)
-            trajectories = flatten_batch(trajectories)  # (B*N, d)
-            covariances = jax.vmap(self.sde.covariance)(trajectories, ts)  # (B*N, d, d)
+        def train_step(state, batch: tuple):
+            trajectories, gradients, covariances = batch # (B, N, 2*n_bases)
+            ts = rearrange(
+                repeat(self.sde.T - self.sde.ts[:-1], 'n -> b n', b=b_size),  # !!! the backward trajectories are in the reverse order, so we need inverted time series.
+                'b n -> (b n) 1', 
+                b=b_size
+            )
+
+            trajectories = rearrange(trajectories, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
+            gradients = rearrange(gradients, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
+            covariances = rearrange(covariances, 'b n d1 d2 -> (b n) d1 d2')  # (B*N, 2*n_bases, 2*n_bases)
 
             def loss_fn(params) -> tuple:
-                score_p_star_est, updates = state.apply_fn(
+                score, updates = state.apply_fn(
                     {"params": params, "batch_stats": state.batch_stats},
-                    x=trajectories,
+                    x_complex=trajectories,
                     t=ts,
                     train=True,
                     mutable=["batch_stats"],
-                    rngs={"dropout": state.key},
-                )  # (B*N, d)
-                loss = weighted_norm_square(
-                    x=score_p_star_est - score_p_star_gradients, weight=covariances
-                )  # (B*N, d) -> (B*N, )
+                )  # (B*N, 2*n_bases)
+                score_real, score_imag = jnp.split(score, 2, axis=-1)
+                score_complex = score_real + 1j * score_imag
+                loss = complex_weighted_norm_square(
+                    x=score_complex - gradients, weight=covariances
+                )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
@@ -329,7 +333,7 @@ class DiffusionBridge:
             (loss, updates), grads = grad_fn(state.params)
             state = state.apply_gradients(grads=grads)
             state = state.replace(batch_stats=updates["batch_stats"])
-            step_rng_key, _ = random.split(state.key)
+            step_rng_key, _ = jax.random.split(state.key)
             state = state.replace(key=step_rng_key)
 
             metric_updates = state.metrics.single_from_model_output(loss=loss)
@@ -341,8 +345,8 @@ class DiffusionBridge:
             model=score_p_star_net,
             rng_key=network_init_rng_key,
             input_shapes=[
-                (training_params["batch_size"], self.sde.dim),
-                (training_params["batch_size"], 1),
+                (b_size, self.sde.dim*self.sde.n_bases),
+                (b_size, 1),
             ],
             learning_rate=training_params["learning_rate"],
             warmup_steps=training_params["warmup_steps"],
