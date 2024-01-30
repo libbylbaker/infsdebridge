@@ -84,14 +84,16 @@ class Downsample(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, t_emb: jnp.ndarray, train: bool) -> jnp.ndarray:
-        x_res = Dense(self.output_dim)(x)
-        x = Dense(self.output_dim)(x)
+        input_dim = x.shape[-1]
+        x_in = x.copy()
+        x = Dense(input_dim)(x)
 
-        scale, shift = TimeEmbeddingMLP(self.output_dim,
+        scale, shift = TimeEmbeddingMLP(input_dim,
                                         self.act_fn)(t_emb)
         x = x * (1.0 + scale) + shift
+        x = get_act_fn(self.act_fn)(x) + x_in
+        x = Dense(self.output_dim)(x)
         x = get_act_fn(self.act_fn)(x)
-        x = x + x_res
         if self.batchnorm:
             x = nn.BatchNorm(use_running_average=not train)(x)
         else:
@@ -105,16 +107,17 @@ class Upsample(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, x_skip: jnp.ndarray, t_emb: jnp.ndarray, train: bool) -> jnp.ndarray:
-        x = jnp.concatenate([x, x_skip], axis=-1)
+        x_in = jnp.concatenate([x, x_skip], axis=-1)
+        input_dim = x_in.shape[-1]
     
-        x_res = Dense(self.output_dim)(x)
-        x = Dense(self.output_dim)(x)
+        x = Dense(input_dim)(x_in)
 
-        scale, shift = TimeEmbeddingMLP(self.output_dim, 
+        scale, shift = TimeEmbeddingMLP(input_dim, 
                                         self.act_fn)(t_emb)
         x = x * (1.0 + scale) + shift
+        x = get_act_fn(self.act_fn)(x) + x_in
+        x = Dense(self.output_dim)(x)
         x = get_act_fn(self.act_fn)(x)
-        x = x + x_res
         if self.batchnorm:
             x = nn.BatchNorm(use_running_average=not train)(x)
         else:
@@ -152,8 +155,8 @@ class ScoreUNet(nn.Module):
 
         # bottleneck
         bottleneck_dim = self.encoder_layer_dims[-1]
-        x = Dense(bottleneck_dim)(x)
-        x = get_act_fn(self.act_fn)(x)
+        x_out = Dense(bottleneck_dim)(x)
+        x = get_act_fn(self.act_fn)(x_out) + x
 
         # upsample
         for dim, x_skip in zip(self.decoder_layer_dims, downs[::-1]):

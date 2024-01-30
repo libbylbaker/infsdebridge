@@ -12,7 +12,7 @@ def batch_matmul(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
     return jax.vmap(jnp.matmul, in_axes=(0, 0), out_axes=0)(A, B)
 
 
-@partial(jax.jit, static_argnums=(0, ), backend='cpu')
+@partial(jax.jit, static_argnums=(0, ), backend='gpu')
 def euler_maruyama(
     sde: SDE,
     initial_vals: jnp.ndarray,

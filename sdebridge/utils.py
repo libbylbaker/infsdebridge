@@ -121,5 +121,15 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
 
 @jax.vmap
 def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.ndarray:
+    # x, weight = jnp.abs(x), jnp.abs(weight)
     norm = jnp.einsum('...i,...ij,...j->...', jnp.conj(x), weight, x)
     return jnp.abs(norm)
+
+
+# @jax.vmap
+# def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.ndarray:
+#     x_real, x_imag = jnp.real(x), jnp.imag(x)
+#     weight_real, weight_imag = jnp.real(weight), jnp.imag(weight)
+#     norm_real = jnp.einsum('...i,...ij,...j->...', x_real, weight_real, x_real) 
+#     norm_imag = jnp.einsum('...i,...ij,...j->...', x_imag, weight_imag, x_imag)
+#     return 0.5 * (norm_real + norm_imag)

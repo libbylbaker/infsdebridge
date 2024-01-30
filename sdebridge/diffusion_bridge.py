@@ -8,7 +8,7 @@ from einops import rearrange, repeat
 
 from .networks import ScoreUNet
 from .sde import SDE
-from .solver import euler_maruyama
+from .solver import euler_maruyama, batch_matmul
 from .utils import get_iterable_dataset, create_train_state, complex_weighted_norm_square
 
 GDRK = jax.random.PRNGKey(0)
@@ -17,7 +17,7 @@ class DiffusionBridge:
     def __init__(self, sde: SDE):
         self.sde = sde
 
-    @partial(jax.jit, static_argnums=(0, 2), backend="cpu")
+    @partial(jax.jit, static_argnums=(0, 2), backend="gpu")
     def simulate_forward_process(
         self,
         initial_val: jnp.ndarray,
@@ -43,7 +43,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4))
+    @partial(jax.jit, static_argnums=(0, 3, 4), backend="gpu")
     def simulate_backward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -79,7 +79,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4))
+    @partial(jax.jit, static_argnums=(0, 3, 4), backend="gpu")
     def simulate_forward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -217,9 +217,11 @@ class DiffusionBridge:
                 )  # (B*N, 2*n_bases)
                 score_real, score_imag = jnp.split(score, 2, axis=-1)
                 score_complex = score_real + 1j * score_imag
+                # scaled_score = batch_matmul(covariances, score_complex)  # (B*N, 2*n_bases)
                 loss = complex_weighted_norm_square(
                     x=score_complex - gradients, weight=covariances
                 )
+                # loss = jnp.mean(jnp.abs(score_complex - gradients), axis=-1)
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
