@@ -88,3 +88,28 @@ def butterfly_amasina_pts():
     path_b2 = "../data/inverted_butterfly_amasina.png"
     remove_pts_b2 = -73
     return _interpolate(path_b2, remove_pts_b2)
+
+
+def butterfly_tom_pts():
+    path_b2 = "../data/inverted_butterfly_tom.png"
+    remove_pts_b2 = -2
+    return _interpolate(path_b2, remove_pts_b2)
+
+
+def butterfly_jerry_pts():
+    # !!! This image doesn't work at this moment because of the error of opencv
+    path_b2 = "../data/inverted_butterfly_jerry.png"
+    remove_pts_b2 = -73
+    return _interpolate(path_b2, remove_pts_b2)
+
+
+if __name__ == "__main__":
+    honrathi = butterfly_honrathi_pts()
+    honrathi = np.array(honrathi)[:, ::219]
+    honrathi = np.swapaxes(np.roll(honrathi, shift=-36, axis=1), 0, 1)
+    tom = butterfly_tom_pts()
+    tom = np.array(tom)[:, ::479]
+    tom = np.swapaxes(np.roll(tom, shift=-37, axis=1), 0, 1)
+
+    np.save("../data/honrathi_pts.npy", honrathi)
+    np.save("../data/tom_pts.npy", tom)
