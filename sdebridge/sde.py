@@ -127,9 +127,9 @@ class SDE(abc.ABC):
                 _covariance = super().covariance(val=val, time=inverted_time)
                 score_term = jnp.dot(_covariance, _score)
 
-                # div_term = super().div_covariance(val=val, time=inverted_time)
-                # return -rev_drift_term + score_term + div_term
-                return -rev_drift_term + score_term
+                div_term = super().div_covariance(val=val, time=inverted_time)
+                return -rev_drift_term + score_term + div_term * 0.0
+                # return -rev_drift_term + score_term
             
             def diffusion(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
                 inverted_time = self.T - time
@@ -287,33 +287,33 @@ class FourierGaussianKernelSDE(SDE):
     # def init_S_eval(self) -> jnp.ndarray:
     #     return self.evaluate_S(self.init_S)
 
-    # @partial(jax.jit, static_argnums=(0,), backend='gpu')
-    # def evaluate_S(self, S: jnp.ndarray) -> jnp.ndarray:
-    #     S_coeffs = jnp.fft.fft(S, n=self.n_samples, axis=0) / jnp.sqrt(self.n_samples)
-    #     S_coeffs = jnp.fft.fftshift(S_coeffs, axes=0)   # (n_samples, 2)
-    #     S_eval = jnp.matmul(self._fourier_basis, S_coeffs) / jnp.sqrt(self.n_samples) # (n_bases, 2)
-    #     return S_eval
-    
     @partial(jax.jit, static_argnums=(0,), backend='gpu')
     def evaluate_S(self, S: jnp.ndarray) -> jnp.ndarray:
-        scaling = self.n_samples // self.n_bases
-        return S[::scaling, :]
+        S_coeffs = jnp.fft.fft(S, n=self.n_samples, axis=0) / jnp.sqrt(self.n_samples)
+        S_coeffs = jnp.fft.fftshift(S_coeffs, axes=0)   # (n_samples, 2)
+        S_eval = jnp.matmul(self._fourier_basis, S_coeffs) / jnp.sqrt(self.n_samples) # (n_bases, 2)
+        return S_eval
     
     # @partial(jax.jit, static_argnums=(0,), backend='gpu')
-    # def evaluate_X(self, val: jnp.ndarray) -> jnp.ndarray:
-    #     X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)   # (n_bases, 2)
-    #     X_coeffs = X_coeffs / jnp.sqrt(self.n_samples)
-    #     X_coeffs = jnp.pad(X_coeffs, ((self.n_padding, self.n_padding), (0, 0)), mode='constant', constant_values=0)    # (n_samples, 2)
-    #     X_eval = jnp.matmul(self._fourier_basis, X_coeffs) / jnp.sqrt(self.n_samples) # (n_bases, 2)
-    #     return X_eval
+    # def evaluate_S(self, S: jnp.ndarray) -> jnp.ndarray:
+    #     scaling = self.n_samples // self.n_bases
+    #     return S[::scaling, :]
     
     @partial(jax.jit, static_argnums=(0,), backend='gpu')
     def evaluate_X(self, val: jnp.ndarray) -> jnp.ndarray:
-        scaling = self.n_samples // self.n_bases
-        X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)
+        X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)   # (n_bases, 2)
+        X_coeffs = X_coeffs / jnp.sqrt(self.n_samples)
         X_coeffs = jnp.pad(X_coeffs, ((self.n_padding, self.n_padding), (0, 0)), mode='constant', constant_values=0)    # (n_samples, 2)
-        X_eval = jnp.fft.ifft(X_coeffs, n=self.n_samples, axis=0, norm='backward').real
-        return X_eval[::scaling, :]
+        X_eval = jnp.matmul(self._fourier_basis, X_coeffs) / jnp.sqrt(self.n_samples) # (n_bases, 2)
+        return X_eval
+    
+    # @partial(jax.jit, static_argnums=(0,), backend='gpu')
+    # def evaluate_X(self, val: jnp.ndarray) -> jnp.ndarray:
+    #     scaling = self.n_samples // self.n_bases
+    #     X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)
+    #     X_coeffs = jnp.pad(X_coeffs, ((self.n_padding, self.n_padding), (0, 0)), mode='constant', constant_values=0)    # (n_samples, 2)
+    #     X_eval = jnp.fft.ifft(X_coeffs, n=self.n_samples, axis=0, norm='backward').real
+    #     return X_eval[::scaling, :]
     
     @partial(jax.jit, static_argnums=(0,), backend='gpu')
     def evaluate_Q(self, val: jnp.ndarray) -> jnp.ndarray:
@@ -337,7 +337,8 @@ class FourierGaussianKernelSDE(SDE):
     @partial(jax.jit, static_argnums=(0,), backend='gpu')
     def evaluate_diffusion(self, val: jnp.ndarray) -> jnp.ndarray:
         Q_eval = self.evaluate_Q(val)
-        # diffusion = jnp.fft.fftn(Q_eval, s=(self.n_bases, self.n_grid, self.n_grid), axes=(0, 1, 2), norm='ortho')  # (n_bases, n_grid, n_grid)
+        diffusion = jnp.fft.fft2(Q_eval, axes=(1, 2), norm='ortho')  # (n_bases, n_grid, n_grid)
+        diffusion = jnp.fft.ifft(diffusion, axis=0, norm='ortho')  # (n_bases, n_grid, n_grid
         diffusion = rearrange(diffusion, 'b g1 g2 -> b (g1 g2)')   # (n_bases, n_grid**2)
         return diffusion
     
