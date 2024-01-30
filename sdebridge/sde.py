@@ -127,9 +127,9 @@ class SDE(abc.ABC):
                 _covariance = super().covariance(val=val, time=inverted_time)
                 score_term = jnp.dot(_covariance, _score)
 
-                div_term = super().div_covariance(val=val, time=inverted_time)
-                return -rev_drift_term + score_term + div_term * 0.0
-                # return -rev_drift_term + score_term
+                # div_term = super().div_covariance(val=val, time=inverted_time)
+                # return -rev_drift_term + score_term + div_term * 0.0
+                return -rev_drift_term + score_term
             
             def diffusion(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
                 inverted_time = self.T - time

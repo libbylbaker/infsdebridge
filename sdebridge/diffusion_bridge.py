@@ -194,7 +194,7 @@ class DiffusionBridge:
             ],
         )
 
-        @jax.jit
+        @partial(jax.jit, backend="gpu")
         def train_step(state, batch: tuple):
             trajectories, gradients, covariances = batch # (B, N, 2*n_bases)
             ts = rearrange(
@@ -217,11 +217,9 @@ class DiffusionBridge:
                 )  # (B*N, 2*n_bases)
                 score_real, score_imag = jnp.split(score, 2, axis=-1)
                 score_complex = score_real + 1j * score_imag
-                # scaled_score = batch_matmul(covariances, score_complex)  # (B*N, 2*n_bases)
                 loss = complex_weighted_norm_square(
                     x=score_complex - gradients, weight=covariances
                 )
-                # loss = jnp.mean(jnp.abs(score_complex - gradients), axis=-1)
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
