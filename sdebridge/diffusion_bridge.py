@@ -17,7 +17,7 @@ class DiffusionBridge:
     def __init__(self, sde: SDE):
         self.sde = sde
 
-    @partial(jax.jit, static_argnums=(0, 2), backend="gpu")
+    @partial(jax.jit, static_argnums=(0, 2))
     def simulate_forward_process(
         self,
         initial_val: jnp.ndarray,
@@ -43,7 +43,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4), backend="gpu")
+    @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_backward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -79,7 +79,7 @@ class DiffusionBridge:
         )
         return results
 
-    @partial(jax.jit, static_argnums=(0, 3, 4), backend="gpu")
+    @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_forward_bridge(
         self,
         initial_val: jnp.ndarray,
@@ -194,7 +194,7 @@ class DiffusionBridge:
             ],
         )
 
-        @partial(jax.jit, backend="gpu")
+        @jax.jit
         def train_step(state, batch: tuple):
             trajectories, gradients, covariances = batch # (B, N, 2*n_bases)
             ts = rearrange(

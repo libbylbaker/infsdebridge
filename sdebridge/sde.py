@@ -127,9 +127,9 @@ class SDE(abc.ABC):
                 _covariance = super().covariance(val=val, time=inverted_time)
                 score_term = jnp.dot(_covariance, _score)
 
-                # div_term = super().div_covariance(val=val, time=inverted_time)
-                # return -rev_drift_term + score_term + div_term * 0.0
-                return -rev_drift_term + score_term
+                div_term = super().div_covariance(val=val, time=inverted_time)
+                return -rev_drift_term + score_term + div_term 
+                # return -rev_drift_term + score_term
             
             def diffusion(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
                 inverted_time = self.T - time
@@ -282,24 +282,15 @@ class FourierGaussianKernelSDE(SDE):
         grid = jnp.linspace(grid_range[0], grid_range[1], self.n_grid)
         grid = jnp.stack(jnp.meshgrid(grid, grid, indexing='xy'), axis=-1)
         return grid     # (n_grid, n_grid, 2)
-    
-    # @property
-    # def init_S_eval(self) -> jnp.ndarray:
-    #     return self.evaluate_S(self.init_S)
 
-    @partial(jax.jit, static_argnums=(0,), backend='gpu')
+    @partial(jax.jit, static_argnums=(0,))
     def evaluate_S(self, S: jnp.ndarray) -> jnp.ndarray:
         S_coeffs = jnp.fft.fft(S, n=self.n_samples, axis=0) / jnp.sqrt(self.n_samples)
         S_coeffs = jnp.fft.fftshift(S_coeffs, axes=0)   # (n_samples, 2)
         S_eval = jnp.matmul(self._fourier_basis, S_coeffs) / jnp.sqrt(self.n_samples) # (n_bases, 2)
         return S_eval
-    
-    # @partial(jax.jit, static_argnums=(0,), backend='gpu')
-    # def evaluate_S(self, S: jnp.ndarray) -> jnp.ndarray:
-    #     scaling = self.n_samples // self.n_bases
-    #     return S[::scaling, :]
-    
-    @partial(jax.jit, static_argnums=(0,), backend='gpu')
+
+    @partial(jax.jit, static_argnums=(0,))
     def evaluate_X(self, val: jnp.ndarray) -> jnp.ndarray:
         X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)   # (n_bases, 2)
         X_coeffs = X_coeffs / jnp.sqrt(self.n_samples)
@@ -307,15 +298,7 @@ class FourierGaussianKernelSDE(SDE):
         X_eval = jnp.matmul(self._fourier_basis, X_coeffs) / jnp.sqrt(self.n_samples) # (n_bases, 2)
         return X_eval
     
-    # @partial(jax.jit, static_argnums=(0,), backend='gpu')
-    # def evaluate_X(self, val: jnp.ndarray) -> jnp.ndarray:
-    #     scaling = self.n_samples // self.n_bases
-    #     X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)
-    #     X_coeffs = jnp.pad(X_coeffs, ((self.n_padding, self.n_padding), (0, 0)), mode='constant', constant_values=0)    # (n_samples, 2)
-    #     X_eval = jnp.fft.ifft(X_coeffs, n=self.n_samples, axis=0, norm='backward').real
-    #     return X_eval[::scaling, :]
-    
-    @partial(jax.jit, static_argnums=(0,), backend='gpu')
+    @partial(jax.jit, static_argnums=(0,))
     def evaluate_Q(self, val: jnp.ndarray) -> jnp.ndarray:
         X_eval = self.evaluate_X(val)
         S_eval = X_eval + self._init_S_eval  # (n_bases, 2)
@@ -334,7 +317,7 @@ class FourierGaussianKernelSDE(SDE):
         )(S_eval, self._grid)    # (n_bases, n_grid, n_grid)
         return Q_eval
     
-    @partial(jax.jit, static_argnums=(0,), backend='gpu')
+    @partial(jax.jit, static_argnums=(0,))
     def evaluate_diffusion(self, val: jnp.ndarray) -> jnp.ndarray:
         Q_eval = self.evaluate_Q(val)
         diffusion = jnp.fft.fft2(Q_eval, axes=(1, 2), norm='ortho')  # (n_bases, n_grid, n_grid)
@@ -342,11 +325,11 @@ class FourierGaussianKernelSDE(SDE):
         diffusion = rearrange(diffusion, 'b g1 g2 -> b (g1 g2)')   # (n_bases, n_grid**2)
         return diffusion
     
-    @partial(jax.jit, static_argnums=(0,), backend='gpu')
+    @partial(jax.jit, static_argnums=(0,))
     def drift(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         return jnp.zeros_like(val)
     
-    @partial(jax.jit, static_argnums=(0,), backend='gpu')
+    @partial(jax.jit, static_argnums=(0,))
     def diffusion(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         _diffusion_block = self.evaluate_diffusion(val)
         _zero_block = jnp.zeros_like(_diffusion_block)

@@ -119,6 +119,7 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
 
+@jax.jit
 @jax.vmap
 def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.ndarray:
     # x, weight = jnp.abs(x), jnp.abs(weight)

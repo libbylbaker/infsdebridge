@@ -12,7 +12,7 @@ def batch_matmul(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
     return jax.vmap(jnp.matmul, in_axes=(0, 0), out_axes=0)(A, B)
 
 
-@partial(jax.jit, static_argnums=(0, ), backend='gpu')
+@partial(jax.jit, static_argnums=(0, ))
 def euler_maruyama(
     sde: SDE,
     initial_vals: jnp.ndarray,
@@ -33,7 +33,8 @@ def euler_maruyama(
         covs=jnp.empty((initial_vals.shape[0], sde.dim*sde.n_bases, sde.dim*sde.n_bases), dtype=jnp.complex64),
         step_key=rng_key,
     )
-
+    
+    @partial(jax.jit, static_argnums=(0, 1))
     def euler_maruyama_step(state: SolverState, time: jnp.ndarray) -> tuple:
         """Euler-Maruyama step, NOTE: all the calculations are over batches"""
         time = jnp.expand_dims(time, axis=-1)
