@@ -3,7 +3,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from .sde import SDE
+from sde import SDE
 
 GDRK = jax.random.PRNGKey(0)
 

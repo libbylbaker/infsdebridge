@@ -129,7 +129,6 @@ class SDE(abc.ABC):
 
                 div_term = super().div_covariance(val=val, time=inverted_time)
                 return -rev_drift_term + score_term + div_term 
-                # return -rev_drift_term + score_term
             
             def diffusion(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
                 inverted_time = self.T - time
