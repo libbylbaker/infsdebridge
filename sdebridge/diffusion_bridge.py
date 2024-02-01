@@ -6,10 +6,10 @@ import tensorflow as tf
 from tqdm import tqdm
 from einops import rearrange, repeat
 
-from networks import ScoreUNet
-from sde import SDE
-from solver import euler_maruyama
-from utils import get_iterable_dataset, create_train_state, complex_weighted_norm_square
+from .networks import ScoreUNet
+from .sde import SDE
+from .solver import euler_maruyama
+from .utils import get_iterable_dataset, create_train_state, complex_weighted_norm_square
 
 GDRK = jax.random.PRNGKey(0)
 
