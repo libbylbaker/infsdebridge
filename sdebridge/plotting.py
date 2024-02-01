@@ -1,6 +1,25 @@
 from functools import partial
 
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+from tueplots import axes, bundles, cycler, figsizes, fonts
+from tueplots.constants.color import palettes
+
 from .setup import *
+
+
+def set_style():
+    plt.rcParams.update({"figure.dpi": 150})
+    plt.rcParams.update(bundles.icml2024())
+    # plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
+    plt.rcParams.update(axes.lines())
+    plt.rcParams.update(axes.spines(top=False, right=False))
+
+
+def add_start_to_end(xy, val_ax=-2):
+    val = jnp.take(a=xy, axis=val_ax, indices=0)
+    val = jnp.expand_dims(val, val_ax)
+    return jnp.append(arr=xy, values=val, axis=val_ax)
 
 
 def plot_2d_vector_field(
