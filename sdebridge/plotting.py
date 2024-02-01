@@ -2,6 +2,8 @@ from functools import partial
 
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+from matplotlib import colormaps
+from matplotlib.collections import LineCollection
 from tueplots import axes, bundles, cycler, figsizes, fonts
 from tueplots.constants.color import palettes
 
@@ -14,6 +16,36 @@ def set_style():
     # plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
     plt.rcParams.update(axes.lines())
     plt.rcParams.update(axes.spines(top=False, right=False))
+
+
+def plot_butterfly_traj_pts(init, traj, sample_idx, ax, cmap_name="viridis"):
+    cmap = colormaps.get_cmap(cmap_name)
+    colors = cmap(jnp.linspace(0, 1, traj.shape[1]))
+    t = jnp.linspace(0, 1, traj.shape[1])
+    shift = jnp.linspace(0, 0.0, traj.shape[1])
+    traj = add_start_to_end(traj)
+    init = add_start_to_end(init)
+    ax.plot(
+        traj[sample_idx, -1, :, 0] + shift[-1],
+        traj[sample_idx, -1, :, 1],
+        color=colors[-1],
+        alpha=0.7,
+    )
+    for i in range(traj.shape[-2]):
+        x = traj[sample_idx, :, i, 0] + shift
+        points = jnp.array([x, traj[sample_idx, :, i, 1]]).T.reshape(-1, 1, 2)
+        segments = jnp.concatenate([points[:-1], points[1:]], axis=1)
+        # Create a continuous norm to map from data points to colors,
+        norm = plt.Normalize(t.min(), t.max())
+        lc = LineCollection(segments, cmap=cmap_name, norm=norm, alpha=0.4)
+        # Set the values used for colormapping,
+        lc.set_array(t),
+        lc.set_linewidth(1),
+        line = (ax.add_collection(lc),)
+    plt.xlabel("x")
+    plt.ylabel("y")
+    ax.plot(init[:, 0], init[:, 1], color=colors[0])
+    return ax
 
 
 def add_start_to_end(xy, val_ax=-2):
