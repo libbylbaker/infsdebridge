@@ -7,6 +7,14 @@ from matplotlib.collections import LineCollection
 from tueplots import axes, bundles, cycler, figsizes, fonts
 from tueplots.constants.color import palettes
 
+<<<<<<< Updated upstream
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+from matplotlib import colormaps
+from matplotlib.collections import LineCollection
+from tueplots import axes, bundles, cycler, figsizes, fonts
+from tueplots.constants.color import palettes
+
 from .setup import *
 
 
@@ -16,21 +24,38 @@ def set_style(column="half", nrows=1, ncols=1):
         bundles.icml2024(column=column, nrows=nrows, ncols=ncols, usetex=True)
     )
     plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
+=======
+from .setup import *
+
+
+def set_style():
+    plt.rcParams.update({"figure.dpi": 150})
+    plt.rcParams.update(bundles.icml2024(usetex=False))
+    # plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
+>>>>>>> Stashed changes
     plt.rcParams.update(axes.lines())
     plt.rcParams.update(axes.spines(top=False, right=False))
 
 
+<<<<<<< Updated upstream
 def set_style2(nrows, ncols):
     plt.rcParams.update(figsizes.icml2024_full(nrows=nrows, ncols=ncols))
     plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
 
 
 def plot_butterfly_traj_pts(traj, sample_idx, ax, cmap_name="viridis"):
+=======
+def plot_butterfly_traj_pts(init, traj, sample_idx, ax, cmap_name="viridis"):
+>>>>>>> Stashed changes
     cmap = colormaps.get_cmap(cmap_name)
     colors = cmap(jnp.linspace(0, 1, traj.shape[1]))
     t = jnp.linspace(0, 1, traj.shape[1])
     shift = jnp.linspace(0, 0.0, traj.shape[1])
     traj = add_start_to_end(traj)
+<<<<<<< Updated upstream
+=======
+    init = add_start_to_end(init)
+>>>>>>> Stashed changes
     ax.plot(
         traj[sample_idx, -1, :, 0] + shift[-1],
         traj[sample_idx, -1, :, 1],
@@ -46,11 +71,19 @@ def plot_butterfly_traj_pts(traj, sample_idx, ax, cmap_name="viridis"):
         lc = LineCollection(segments, cmap=cmap_name, norm=norm, alpha=0.4)
         # Set the values used for colormapping,
         lc.set_array(t),
+<<<<<<< Updated upstream
         lc.set_linewidth(0.7),
         line = (ax.add_collection(lc),)
     plt.xlabel("$x$")
     plt.ylabel("$y$")
     ax.plot(traj[sample_idx, 0, :, 0], traj[sample_idx, 0, :, 1], color=colors[0])
+=======
+        lc.set_linewidth(1),
+        line = (ax.add_collection(lc),)
+    plt.xlabel(r"$x$", fontfamily="serif")
+    plt.ylabel(r"$y$", fontfamily="serif")
+    ax.plot(init[:, 0], init[:, 1], color=colors[0])
+>>>>>>> Stashed changes
     return ax
 
 

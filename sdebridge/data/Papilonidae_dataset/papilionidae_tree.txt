@@ -1,0 +1,1 @@
+(Papilio_deiphobus:0.02135,(Papilio_protenor:0.01221,(Papilio_polytes:0.01127,(Papilio_phestus:0.00377,Papilio_ambrax:0.00325)QS1872:0.00893)QS1871:0.00991)QS1870:0.007)QS1868:0;
