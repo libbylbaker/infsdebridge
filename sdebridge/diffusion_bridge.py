@@ -1,17 +1,21 @@
 from functools import partial
 from typing import Callable
+
 import jax
 import jax.numpy as jnp
 import tensorflow as tf
-from tqdm import tqdm
 from einops import rearrange, repeat
+from tqdm import tqdm
 
-from .networks import ScoreUNet
-from .sde import SDE
-from .solver import euler_maruyama
-from .utils import get_iterable_dataset, create_train_state, complex_weighted_norm_square
+from sdebridge.networks import ScoreUNet
+from sdebridge.sde import SDE
+from sdebridge.solver import euler_maruyama
+from sdebridge.utils import (
+    complex_weighted_norm_square,
+    create_train_state,
+    get_iterable_dataset,
+)
 
-GDRK = jax.random.PRNGKey(0)
 
 class DiffusionBridge:
     def __init__(self, sde: SDE):
@@ -22,7 +26,7 @@ class DiffusionBridge:
         self,
         initial_val: jnp.ndarray,
         num_batches: int,
-        rng_key: jax.Array = GDRK,
+        rng_key: jax.Array,
     ) -> dict:
         """Simulate the forward non-bridge process (X(t)):
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
@@ -50,7 +54,7 @@ class DiffusionBridge:
         terminal_val: jnp.ndarray,
         score_p: Callable,
         num_batches: int,
-        rng_key: jax.Array = GDRK,
+        rng_key: jax.Array,
     ) -> dict:
         """Simulate the backward bridge process (Z*(t)):
             dZ*(t) = {-f(T-t, Z*(t)) + Sigma(T-t, Z*(t)) s(T-t, Z*(t)) + div Sigma(T-t, Z*(t))} dt + g(T-t, Z*(t)) dW(t)
@@ -86,7 +90,7 @@ class DiffusionBridge:
         terminal_val: jnp.ndarray,
         score_h: Callable,
         num_batches: int,
-        rng_key: jax.Array = GDRK,
+        rng_key: jax.Array,
     ) -> dict:
         """Simulate the forward bridge process (X*(t)) which is the "backward of backward":
             dX*(t) = {-f(t, X*(t)) + Sigma(t, X*(t)) [s*(t, X*(t)) - s(t, X*(t))]} dt + g(t, X*(t)) dW(t)
@@ -122,7 +126,7 @@ class DiffusionBridge:
         terminal_val: jnp.ndarray,
         score_p: Callable,
         score_h: Callable,
-        rng_key: jax.Array = GDRK,
+        rng_key: jax.Array,
     ) -> callable:
         assert process_type in ["forward", "backward_bridge", "forward_bridge"]
 
@@ -154,7 +158,7 @@ class DiffusionBridge:
                 yield (
                     histories["trajectories"],
                     histories["gradients"],
-                    histories["covariances"]
+                    histories["covariances"],
                 )
 
         return generator
@@ -162,8 +166,8 @@ class DiffusionBridge:
     def learn_p_score(
         self,
         initial_val: jnp.ndarray,
+        rng_key: jax.Array,
         setup_params: dict = None,
-        rng_key: jax.Array = GDRK,
     ):
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
@@ -188,25 +192,34 @@ class DiffusionBridge:
             generator=data_generator,
             dtype=(tf.complex64, tf.complex64, tf.complex64),
             shape=[
-                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
-                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
-                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim, self.sde.n_bases*self.sde.dim)
+                (b_size, self.sde.N, self.sde.n_bases * self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases * self.sde.dim),
+                (
+                    b_size,
+                    self.sde.N,
+                    self.sde.n_bases * self.sde.dim,
+                    self.sde.n_bases * self.sde.dim,
+                ),
             ],
         )
 
         @jax.jit
         def train_step(state, batch: tuple):
-            trajectories, gradients, covariances = batch # (B, N, 2*n_bases)
+            trajectories, gradients, covariances = batch  # (B, N, 2*n_bases)
             ts = rearrange(
-                repeat(self.sde.ts[1:], 'n -> b n', b=b_size), 
-                'b n -> (b n) 1', 
-                b=b_size
+                repeat(self.sde.ts[1:], "n -> b n", b=b_size),
+                "b n -> (b n) 1",
+                b=b_size,
             )
 
-            trajectories = rearrange(trajectories, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
-            gradients = rearrange(gradients, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
-            covariances = rearrange(covariances, 'b n d1 d2 -> (b n) d1 d2')  # (B*N, 2*n_bases, 2*n_bases)
-      
+            trajectories = rearrange(
+                trajectories, "b n d -> (b n) d"
+            )  # (B*N, 2*n_bases)
+            gradients = rearrange(gradients, "b n d -> (b n) d")  # (B*N, 2*n_bases)
+            covariances = rearrange(
+                covariances, "b n d1 d2 -> (b n) d1 d2"
+            )  # (B*N, 2*n_bases, 2*n_bases)
+
             def loss_fn(params) -> tuple:
                 score, updates = state.apply_fn(
                     {"params": params, "batch_stats": state.batch_stats},
@@ -239,7 +252,7 @@ class DiffusionBridge:
             model=score_p_net,
             rng_key=network_init_rng_key,
             input_shapes=[
-                (b_size, self.sde.dim*self.sde.n_bases),
+                (b_size, self.sde.dim * self.sde.n_bases),
                 (b_size, 1),
             ],
             learning_rate=training_params["learning_rate"],
@@ -268,8 +281,8 @@ class DiffusionBridge:
         initial_val: jnp.ndarray,
         terminal_val: jnp.ndarray,
         score_p: Callable,
+        rng_key: jax.Array,
         setup_params: dict = None,
-        rng_key: jax.Array = GDRK,
     ):
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
@@ -294,24 +307,35 @@ class DiffusionBridge:
             generator=data_generator,
             dtype=(tf.complex64, tf.complex64, tf.complex64),
             shape=[
-                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
-                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim),
-                (b_size, self.sde.N, self.sde.n_bases*self.sde.dim, self.sde.n_bases*self.sde.dim)
+                (b_size, self.sde.N, self.sde.n_bases * self.sde.dim),
+                (b_size, self.sde.N, self.sde.n_bases * self.sde.dim),
+                (
+                    b_size,
+                    self.sde.N,
+                    self.sde.n_bases * self.sde.dim,
+                    self.sde.n_bases * self.sde.dim,
+                ),
             ],
         )
 
         @jax.jit
         def train_step(state, batch: tuple):
-            trajectories, gradients, covariances = batch # (B, N, 2*n_bases)
+            trajectories, gradients, covariances = batch  # (B, N, 2*n_bases)
             ts = rearrange(
-                repeat(self.sde.T - self.sde.ts[:-1], 'n -> b n', b=b_size),  # !!! the backward trajectories are in the reverse order, so we need inverted time series.
-                'b n -> (b n) 1', 
-                b=b_size
+                repeat(
+                    self.sde.T - self.sde.ts[:-1], "n -> b n", b=b_size
+                ),  # !!! the backward trajectories are in the reverse order, so we need inverted time series.
+                "b n -> (b n) 1",
+                b=b_size,
             )
 
-            trajectories = rearrange(trajectories, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
-            gradients = rearrange(gradients, 'b n d -> (b n) d')  # (B*N, 2*n_bases)
-            covariances = rearrange(covariances, 'b n d1 d2 -> (b n) d1 d2')  # (B*N, 2*n_bases, 2*n_bases)
+            trajectories = rearrange(
+                trajectories, "b n d -> (b n) d"
+            )  # (B*N, 2*n_bases)
+            gradients = rearrange(gradients, "b n d -> (b n) d")  # (B*N, 2*n_bases)
+            covariances = rearrange(
+                covariances, "b n d1 d2 -> (b n) d1 d2"
+            )  # (B*N, 2*n_bases, 2*n_bases)
 
             def loss_fn(params) -> tuple:
                 score, updates = state.apply_fn(
@@ -345,7 +369,7 @@ class DiffusionBridge:
             model=score_p_star_net,
             rng_key=network_init_rng_key,
             input_shapes=[
-                (b_size, self.sde.dim*self.sde.n_bases),
+                (b_size, self.sde.dim * self.sde.n_bases),
                 (b_size, 1),
             ],
             learning_rate=training_params["learning_rate"],
