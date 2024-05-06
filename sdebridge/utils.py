@@ -5,11 +5,9 @@ import jax.numpy as jnp
 import optax
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from clu import metrics, parameter_overview
 from flax import linen as nn
 from flax import struct
 from flax.training import train_state
-
 
 
 ### Dimension helpers
@@ -25,16 +23,13 @@ def unsqueeze(x: jax.Array, axis: int):
 complex_to_real = lambda z: jnp.concatenate([jnp.real(z), jnp.imag(z)], axis=-1)
 real_to_complex = lambda x: x[..., :2] + 1j * x[..., 2:]
 
+
 ### Network helpers
-@struct.dataclass
-class Metrics(metrics.Collection):
-    loss: metrics.Average.from_output("loss")
 
 
 class TrainState(train_state.TrainState):
     key: jax.Array
     batch_stats: any
-    metrics: Metrics
 
 
 def create_optimizer(learning_rate: float, warmup_steps: int, decay_steps: int):
@@ -80,7 +75,6 @@ def create_train_state(
         key=rng_key,
         tx=optimizer,
         batch_stats=batch_stats,
-        metrics=Metrics.empty(),
     )
 
     # print(parameter_overview.get_parameter_overview(params))
@@ -119,9 +113,10 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
 
+
 @jax.jit
 @jax.vmap
 def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.ndarray:
     # x, weight = jnp.abs(x), jnp.abs(weight)
-    norm = jnp.einsum('...i,...ij,...j->...', jnp.conj(x), weight, x)
+    norm = jnp.einsum("...i,...ij,...j->...", jnp.conj(x), weight, x)
     return jnp.abs(norm)
