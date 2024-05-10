@@ -7,7 +7,7 @@ import tensorflow as tf
 from einops import rearrange, repeat
 from tqdm import tqdm
 
-from sdebridge.networks import ScoreUNet
+from sdebridge.networks.score_unet import ScoreUNet
 from sdebridge.sde import SDE
 from sdebridge.solver import euler_maruyama
 from sdebridge.utils import (
