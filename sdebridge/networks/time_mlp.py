@@ -7,21 +7,22 @@ import jax.numpy as jnp
 from flax import linen as nn
 
 
-def get_time_step_embedding(
-    t: float,
-    embedding_dim: int,
-    max_period: float = 128.0,
-    scaling: float = 100.0,
-) -> jnp.ndarray:
-    """Embed scalar time steps into a vector of size `embedding_dim`"""
-    emb = jnp.empty((embedding_dim,), dtype=jnp.float32)
+def get_time_embedding(
+    embedding_dim: int, max_period: float = 128.0, scaling: float = 100.0
+):
     div_term = jnp.exp(
         jnp.arange(0, embedding_dim, 2, dtype=jnp.float32)
         * (-math.log(max_period) / embedding_dim)
     )
-    emb = emb.at[0::2].set(jnp.sin(scaling * t * div_term))
-    emb = emb.at[1::2].set(jnp.cos(scaling * t * div_term))
-    return emb
+
+    def time_embedding(t: float) -> jnp.ndarray:
+        """Embed scalar time steps into a vector of size `embedding_dim`"""
+        emb = jnp.empty((embedding_dim,), dtype=jnp.float32)
+        emb = emb.at[0::2].set(jnp.sin(scaling * t * div_term))
+        emb = emb.at[1::2].set(jnp.cos(scaling * t * div_term))
+        return emb
+
+    return time_embedding
 
 
 class TimeEmbeddingMLP(nn.Module):

@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from flax import linen as nn
 
-from sdebridge.networks.time_mlp import TimeEmbeddingMLP, get_time_step_embedding
+from sdebridge.networks.time_mlp import TimeEmbeddingMLP, get_time_embedding
 
 
 class ScoreUNet(nn.Module):
@@ -19,16 +19,14 @@ class ScoreUNet(nn.Module):
     batchnorm: bool = True
 
     @nn.compact
-    def __call__(
-        self, x_complex: jnp.ndarray, t: jnp.ndarray, train: bool
-    ) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, t: jnp.ndarray, train: bool) -> jnp.ndarray:
         assert (
             self.encoder_layer_dims[-1] == self.decoder_layer_dims[0]
         ), "Bottleneck dim does not match"
-        t_emb = jax.vmap(
-            partial(get_time_step_embedding, embedding_dim=self.time_embedding_dim)
-        )(t)
-        x = InputDense(self.init_embedding_dim, self.act_fn)(x_complex)
+        time_embedding = get_time_embedding(self.time_embedding_dim)
+        t = jax.vmap(time_embedding, in_axes=0)(t)
+
+        x = InputDense(self.init_embedding_dim, self.act_fn)(x)
 
         # downsample
         downs = []
@@ -37,7 +35,7 @@ class ScoreUNet(nn.Module):
                 output_dim=dim,
                 act_fn=self.act_fn,
                 batchnorm=self.batchnorm,
-            )(x, t_emb, train)
+            )(x, t, train)
             downs.append(x)
 
         # bottleneck
@@ -51,7 +49,7 @@ class ScoreUNet(nn.Module):
                 output_dim=dim,
                 act_fn=self.act_fn,
                 batchnorm=self.batchnorm,
-            )(x, x_skip, t_emb, train)
+            )(x, x_skip, t, train)
 
         # out
         score = Dense(self.output_dim)(x)
