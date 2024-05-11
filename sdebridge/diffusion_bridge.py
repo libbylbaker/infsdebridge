@@ -8,12 +8,13 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 
 from sdebridge.networks.score_unet import ScoreUNet
-from sdebridge.sde import SDE
-from sdebridge.solver import euler_maruyama
+from sdebridge.sde import SDE, bridge, reverse
+from sdebridge.solver import euler_maruyama, gradients_and_covariances
 from sdebridge.utils import (
     complex_weighted_norm_square,
     create_train_state,
     get_iterable_dataset,
+    weighted_norm_square,
 )
 
 
@@ -27,13 +28,13 @@ class DiffusionBridge:
         initial_val: jnp.ndarray,
         num_batches: int,
         rng_key: jax.Array,
-    ) -> dict:
+    ) -> jax.Array:
         """Simulate the forward non-bridge process (X(t)):
             dX(t) = f(X(t), t) dt + g(X(t), t) dW(t)
 
         Args:
-            initial_condition (jnp.ndarray): X(0)
-            rng (jax.Array): random number generator
+            initial_val (jnp.ndarray): X(0)
+            rng_key (jax.Array): random number generator
             num_batches (int): number of batches to simulate
 
         Returns:
@@ -41,11 +42,18 @@ class DiffusionBridge:
                             "scaled_stochastic_increments": jax.Array, (B, N, d) approximation of gradients,
                             "step_rngs": jax.Array, (B, N) random number generators}
         """
-        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
-        results = euler_maruyama(
-            sde=self.sde, initial_vals=initial_vals, terminal_vals=None, rng_key=rng_key
+        keys = jax.random.split(rng_key, num_batches)
+        batched = jax.vmap(euler_maruyama, in_axes=(0, None, None, None, None, None))
+        trajectories = batched(
+            keys,
+            initial_val,
+            self.sde.ts,
+            self.sde.drift,
+            self.sde.diffusion,
+            self.sde.bm_shape,
         )
-        return results
+
+        return trajectories
 
     @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_backward_bridge(
@@ -55,7 +63,7 @@ class DiffusionBridge:
         score_p: Callable,
         num_batches: int,
         rng_key: jax.Array,
-    ) -> dict:
+    ) -> jax.Array:
         """Simulate the backward bridge process (Z*(t)):
             dZ*(t) = {-f(T-t, Z*(t)) + Sigma(T-t, Z*(t)) s(T-t, Z*(t)) + div Sigma(T-t, Z*(t))} dt + g(T-t, Z*(t)) dW(t)
 
@@ -69,19 +77,22 @@ class DiffusionBridge:
                       "scaled_stochastic_increments": jax.Array, (B, N, d) approximation of gradients,
                       "step_rngs": jax.Array, (B, N) random number generators}
         !!! N.B. trajectories = [Z*(T), ..., Z*(0)], which is opposite to expected simulate_backward_bridge !!!
-        !!! N.B. scaled_stochastic_increments is also therefore exactly the opposite to what's given in simulate backward bridge!!!
         """
-        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
-        terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1))
 
-        reverse_sde = self.sde.reverse_sde(score_func=score_p)
-        results = euler_maruyama(
-            sde=reverse_sde,
-            initial_vals=terminal_vals,  # NOTE: since here the reverse bridge is simulated, we need to swap the initial and terminal values.
-            terminal_vals=initial_vals,
-            rng_key=rng_key,
+        reverse_sde = reverse(self.sde, score_fun=score_p)
+        keys = jax.random.split(rng_key, num_batches)
+        batched_eul = jax.vmap(
+            euler_maruyama, in_axes=(0, None, None, None, None, None)
         )
-        return results
+        trajectories = batched_eul(
+            keys,
+            initial_val,
+            self.sde.ts,
+            reverse_sde.drift,
+            reverse_sde.diffusion,
+            reverse_sde.bm_shape,
+        )
+        return trajectories
 
     @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_forward_bridge(
@@ -106,59 +117,108 @@ class DiffusionBridge:
                       "step_rngs": jax.Array, (B, N) random number generators}
         """
 
-        initial_vals = jnp.tile(initial_val, reps=(num_batches, 1))
-        terminal_vals = jnp.tile(terminal_val, reps=(num_batches, 1))
-
-        bridge_sde = self.sde.bridge_sde(score_func=score_h)
-        results = euler_maruyama(
-            sde=bridge_sde,
-            initial_vals=initial_vals,
-            terminal_vals=terminal_vals,
-            rng_key=rng_key,
+        bridge_sde = bridge(self.sde, score_fun=score_h)
+        keys = jax.random.split(rng_key, num_batches)
+        batched_eul = jax.vmap(
+            euler_maruyama, in_axes=(0, None, None, None, None, None)
         )
-        return results
+        trajectories = batched_eul(
+            keys,
+            initial_val,
+            self.sde.ts,
+            bridge_sde.drift,
+            bridge_sde.diffusion,
+            bridge_sde.bm_shape,
+        )
+        return trajectories
 
-    def get_trajectories_generator(
+    def forward_generator(
         self,
+        key: jax.Array,
         batch_size: int,
-        process_type: str,
+        initial_val: jnp.ndarray,
+    ) -> callable:
+        def generator():
+            subkey = key
+            while True:
+                step_key, subkey = jax.random.split(subkey)
+                trajectories = self.simulate_forward_process(
+                    initial_val, rng_key=step_key, num_batches=batch_size
+                )
+                gradients, covariances = gradients_and_covariances(
+                    trajectories, self.sde.ts, self.sde.drift, self.sde.diffusion
+                )
+
+                trajectories = trajectories.reshape(
+                    (batch_size, self.sde.N, self.sde.n_bases * self.sde.dim)
+                )
+                gradients = gradients.reshape(
+                    (batch_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim)
+                )
+                covariances = covariances.reshape(
+                    (
+                        batch_size,
+                        self.sde.N - 1,
+                        self.sde.n_bases * self.sde.dim,
+                        self.sde.n_bases * self.sde.dim,
+                    )
+                )
+
+                yield (
+                    trajectories[:, 1:],
+                    gradients,
+                    covariances,
+                )
+
+        return generator
+
+    def backward_bridge_generator(
+        self,
+        rng_key: jax.Array,
+        batch_size: int,
         initial_val: jnp.ndarray,
         terminal_val: jnp.ndarray,
         score_p: Callable,
-        score_h: Callable,
-        rng_key: jax.Array,
     ) -> callable:
-        assert process_type in ["forward", "backward_bridge", "forward_bridge"]
+        reverse_sde = reverse(self.sde, score_p)
 
         def generator():
-            nonlocal rng_key
+            subkey = rng_key
             while True:
-                step_rng_key, rng_key = jax.random.split(rng_key)
-                if process_type == "forward":
-                    histories = self.simulate_forward_process(
-                        initial_val, rng_key=step_rng_key, num_batches=batch_size
+                step_key, subkey = jax.random.split(subkey)
+                trajectories = self.simulate_backward_bridge(
+                    initial_val,
+                    terminal_val,
+                    score_p=score_p,
+                    rng_key=step_key,
+                    num_batches=batch_size,
+                )
+                gradients, covariances = gradients_and_covariances(
+                    trajectories,
+                    reverse_sde.ts,
+                    reverse_sde.drift,
+                    reverse_sde.diffusion,
+                )
+
+                trajectories = trajectories.reshape(
+                    (batch_size, self.sde.N, self.sde.n_bases * self.sde.dim)
+                )
+                gradients = gradients.reshape(
+                    (batch_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim)
+                )
+                covariances = covariances.reshape(
+                    (
+                        batch_size,
+                        self.sde.N - 1,
+                        self.sde.n_bases * self.sde.dim,
+                        self.sde.n_bases * self.sde.dim,
                     )
-                elif process_type == "backward_bridge":
-                    histories = self.simulate_backward_bridge(
-                        initial_val,
-                        terminal_val,
-                        score_p=score_p,
-                        rng_key=step_rng_key,
-                        num_batches=batch_size,
-                    )
-                elif process_type == "forward_bridge":
-                    histories = self.simulate_forward_bridge(
-                        initial_val,
-                        terminal_val,
-                        score_h=score_h,
-                        rng_key=step_rng_key,
-                        num_batches=batch_size,
-                    )
-                rng_key = histories["last_key"]
+                )
+
                 yield (
-                    histories["trajectories"],
-                    histories["gradients"],
-                    histories["covariances"],
+                    trajectories[:, 1:],
+                    gradients,
+                    covariances,
                 )
 
         return generator
@@ -172,31 +232,23 @@ class DiffusionBridge:
         assert "network" in setup_params.keys() and "training" in setup_params.keys()
         net_params = setup_params["network"]
         training_params = setup_params["training"]
-        score_p_net = ScoreUNet(**net_params)
-
         b_size = training_params["batch_size"]
+        load_size = training_params["load_size"]
+        net = setup_params["neural_net"]
+
+        score_p_net = net(**net_params)
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
-
-        data_generator = self.get_trajectories_generator(
-            batch_size=b_size,
-            process_type="forward",
-            initial_val=initial_val,
-            terminal_val=None,
-            score_p=None,
-            score_h=None,
-            rng_key=data_rng_key,
-        )
-
+        data_generator = self.forward_generator(data_rng_key, load_size, initial_val)
         iter_dataset = get_iterable_dataset(
             generator=data_generator,
-            dtype=(tf.complex64, tf.complex64, tf.complex64),
+            dtype=(tf.float64, tf.float64, tf.float64),
             shape=[
-                (b_size, self.sde.N, self.sde.n_bases * self.sde.dim),
-                (b_size, self.sde.N, self.sde.n_bases * self.sde.dim),
+                (load_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim),
+                (load_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim),
                 (
-                    b_size,
-                    self.sde.N,
+                    load_size,
+                    self.sde.N - 1,
                     self.sde.n_bases * self.sde.dim,
                     self.sde.n_bases * self.sde.dim,
                 ),
@@ -220,10 +272,10 @@ class DiffusionBridge:
                 covariances, "b n d1 d2 -> (b n) d1 d2"
             )  # (B*N, 2*n_bases, 2*n_bases)
 
-            def loss_fn(params) -> tuple:
+            def loss_fn_complex(params) -> tuple:
                 score, updates = state.apply_fn(
                     {"params": params, "batch_stats": state.batch_stats},
-                    x_complex=trajectories,
+                    x=trajectories,
                     t=ts,
                     train=True,
                     mutable=["batch_stats"],
@@ -236,6 +288,20 @@ class DiffusionBridge:
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
 
+            def loss_fn(params) -> tuple:
+                score, updates = state.apply_fn(
+                    {"params": params, "batch_stats": state.batch_stats},
+                    x=trajectories,
+                    t=ts,
+                    train=True,
+                    mutable=["batch_stats"],
+                )  # (B*N, 2*n_bases)
+                loss = weighted_norm_square(
+                    x=score - gradients, weight=covariances
+                )  # (B*N, d) -> (B*N, )
+                loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
+                return loss, updates
+
             grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
             (loss, updates), grads = grad_fn(state.params)
             state = state.apply_gradients(grads=grads)
@@ -243,10 +309,7 @@ class DiffusionBridge:
             step_rng_key, _ = jax.random.split(state.key)
             state = state.replace(key=step_rng_key)
 
-            metric_updates = state.metrics.single_from_model_output(loss=loss)
-            metrics = state.metrics.merge(metric_updates)
-            state = state.replace(metrics=metrics)
-            return state
+            return state, loss
 
         state = create_train_state(
             model=score_p_net,
@@ -268,11 +331,19 @@ class DiffusionBridge:
             total=training_params["num_epochs"],
         )
         for i in pbar:
-            for _ in range(training_params["num_batches_per_epoch"]):
-                batch = next(iter_dataset)
-                state = train_step(state, batch)
-            pbar.set_postfix(Epoch=i + 1, loss=f"{state.metrics.compute()['loss']:.4f}")
-            state = state.replace(metrics=state.metrics.empty())
+            total_loss = 0
+            load = next(iter_dataset)
+            for b in range(int(load_size / b_size)):
+                tmp1, tmp2, tmp3 = load
+                batch = (
+                    tmp1[b * b_size : (b + 1) * b_size],
+                    tmp2[b * b_size : (b + 1) * b_size],
+                    tmp3[b * b_size : (b + 1) * b_size],
+                )
+                state, loss = train_step(state, batch)
+                total_loss += loss
+            epoch_loss = total_loss / training_params["num_batches_per_epoch"]
+            pbar.set_postfix(Epoch=i + 1, loss=f"{epoch_loss:.4f}")
 
         return state
 
@@ -290,17 +361,16 @@ class DiffusionBridge:
         score_p_star_net = ScoreUNet(**net_params)
 
         b_size = training_params["batch_size"]
+        load_size = training_params["load_size"]
 
         data_rng_key, network_init_rng_key = jax.random.split(rng_key)
 
-        data_generator = self.get_trajectories_generator(
-            batch_size=b_size,
-            process_type="backward_bridge",
+        data_generator = self.backward_bridge_generator(
+            rng_key=data_rng_key,
+            batch_size=load_size,
             initial_val=initial_val,
             terminal_val=terminal_val,
             score_p=score_p,
-            score_h=None,
-            rng_key=data_rng_key,
         )
 
         iter_dataset = get_iterable_dataset(
@@ -385,8 +455,9 @@ class DiffusionBridge:
             total=training_params["num_epochs"],
         )
         for i in pbar:
-            for _ in range(training_params["num_batches_per_epoch"]):
-                batch = next(iter_dataset)
+            load = next(iter_dataset)
+            for b in range(training_params["num_batches_per_epoch"]):
+                batch = load[b * b_size : (b + 1) * b_size]
                 state = train_step(state, batch)
             pbar.set_postfix(Epoch=i + 1, loss=f"{state.metrics.compute()['loss']:.4f}")
             state = state.replace(metrics=state.metrics.empty())
