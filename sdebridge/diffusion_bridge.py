@@ -148,22 +148,6 @@ class DiffusionBridge:
                 gradients, covariances = gradients_and_covariances(
                     trajectories, self.sde.ts, self.sde.drift, self.sde.diffusion
                 )
-
-                trajectories = trajectories.reshape(
-                    (batch_size, self.sde.N, self.sde.n_bases * self.sde.dim)
-                )
-                gradients = gradients.reshape(
-                    (batch_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim)
-                )
-                covariances = covariances.reshape(
-                    (
-                        batch_size,
-                        self.sde.N - 1,
-                        self.sde.n_bases * self.sde.dim,
-                        self.sde.n_bases * self.sde.dim,
-                    )
-                )
-
                 yield (
                     trajectories[:, 1:],
                     gradients,
@@ -199,22 +183,6 @@ class DiffusionBridge:
                     reverse_sde.drift,
                     reverse_sde.diffusion,
                 )
-
-                trajectories = trajectories.reshape(
-                    (batch_size, self.sde.N, self.sde.n_bases * self.sde.dim)
-                )
-                gradients = gradients.reshape(
-                    (batch_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim)
-                )
-                covariances = covariances.reshape(
-                    (
-                        batch_size,
-                        self.sde.N - 1,
-                        self.sde.n_bases * self.sde.dim,
-                        self.sde.n_bases * self.sde.dim,
-                    )
-                )
-
                 yield (
                     trajectories[:, 1:],
                     gradients,

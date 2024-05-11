@@ -214,7 +214,7 @@ def gaussian_independent_kernel_sde(
         )
         val = val.reshape(-1, dim)
         Q_half = kernel(val)
-        # Q_half = jnp.kron(Q_half, jnp.eye(2))
+        Q_half = jnp.kron(Q_half, jnp.eye(2))
         return Q_half
 
     return SDE(
@@ -224,7 +224,7 @@ def gaussian_independent_kernel_sde(
         n_bases=n_bases,
         drift=drift,
         diffusion=diffusion,
-        bm_shape=(grid_size**2, dim),
+        bm_shape=(grid_size**2 * dim,),
         params=None,
     )
 
