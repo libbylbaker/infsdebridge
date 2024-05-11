@@ -9,7 +9,6 @@ from tqdm import tqdm
 
 from sdebridge.networks.score_unet import ScoreUNet
 from sdebridge.sde import SDE, bridge, reverse
-from sdebridge.solver import euler_maruyama, gradients_and_covariances
 from sdebridge.utils import (
     complex_weighted_norm_square,
     create_train_state,
@@ -38,22 +37,9 @@ class DiffusionBridge:
             num_batches (int): number of batches to simulate
 
         Returns:
-            result (dict): {"trajectories": jax.Array, (B, N, d) forward trajectories,
-                            "scaled_stochastic_increments": jax.Array, (B, N, d) approximation of gradients,
-                            "step_rngs": jax.Array, (B, N) random number generators}
+            result: trajectories: jax.Array, (B, N, d) forward trajectories
         """
-        keys = jax.random.split(rng_key, num_batches)
-        batched = jax.vmap(euler_maruyama, in_axes=(0, None, None, None, None, None))
-        trajectories = batched(
-            keys,
-            initial_val,
-            self.sde.ts,
-            self.sde.drift,
-            self.sde.diffusion,
-            self.sde.bm_shape,
-        )
-
-        return trajectories
+        return self.sde.simulate_trajectories(initial_val, num_batches, rng_key)
 
     @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_backward_bridge(
@@ -70,29 +56,15 @@ class DiffusionBridge:
         Args:
             initial_val (jax.Array): X(0) = Z*(T)
             terminal_val (jax.Array): X(T) = Z*(0)
-            score_p (callable): \nabla\log p(x, t), either a closed form or a neural network.
+            score_p (callable): nabla log p(x, t), either a closed form or a neural network.
 
         Returns:
-            results: {"trajectories": jax.Array, (B, N, d) backward bridge trajectories,
-                      "scaled_stochastic_increments": jax.Array, (B, N, d) approximation of gradients,
-                      "step_rngs": jax.Array, (B, N) random number generators}
+            results: trajectories: jax.Array, (B, N, d) backward bridge trajectories
         !!! N.B. trajectories = [Z*(T), ..., Z*(0)], which is opposite to expected simulate_backward_bridge !!!
         """
 
         reverse_sde = reverse(self.sde, score_fun=score_p)
-        keys = jax.random.split(rng_key, num_batches)
-        batched_eul = jax.vmap(
-            euler_maruyama, in_axes=(0, None, None, None, None, None)
-        )
-        trajectories = batched_eul(
-            keys,
-            initial_val,
-            self.sde.ts,
-            reverse_sde.drift,
-            reverse_sde.diffusion,
-            reverse_sde.bm_shape,
-        )
-        return trajectories
+        return reverse_sde.simulate_trajectories(initial_val, num_batches, rng_key)
 
     @partial(jax.jit, static_argnums=(0, 3, 4))
     def simulate_forward_bridge(
@@ -102,35 +74,21 @@ class DiffusionBridge:
         score_h: Callable,
         num_batches: int,
         rng_key: jax.Array,
-    ) -> dict:
+    ) -> jax.Array:
         """Simulate the forward bridge process (X*(t)) which is the "backward of backward":
             dX*(t) = {-f(t, X*(t)) + Sigma(t, X*(t)) [s*(t, X*(t)) - s(t, X*(t))]} dt + g(t, X*(t)) dW(t)
 
         Args:
             initial_val (jax.Array): X*(0)
             terminal_val (jax.Array): X*(T)
-            score_h (callable): \nabla\log h(x, t), either a closed form or a neural network.
+            score_h (callable): nabla log h(x, t), either a closed form or a neural network.
 
         Returns:
-            results: {"trajectories": jax.Array, (B, N, d) forward bridge trajectories (in normal order)
-                      "scaled_stochastic_increments": jax.Array, (B, N, d) approximation of gradients (not used anymore),
-                      "step_rngs": jax.Array, (B, N) random number generators}
+            results: "trajectories": jax.Array, (B, N, d) forward bridge trajectories (in normal order)
         """
 
         bridge_sde = bridge(self.sde, score_fun=score_h)
-        keys = jax.random.split(rng_key, num_batches)
-        batched_eul = jax.vmap(
-            euler_maruyama, in_axes=(0, None, None, None, None, None)
-        )
-        trajectories = batched_eul(
-            keys,
-            initial_val,
-            self.sde.ts,
-            bridge_sde.drift,
-            bridge_sde.diffusion,
-            bridge_sde.bm_shape,
-        )
-        return trajectories
+        return bridge_sde.simulate_trajectories(initial_val, num_batches, rng_key)
 
     def forward_generator(
         self,
@@ -142,17 +100,11 @@ class DiffusionBridge:
             subkey = key
             while True:
                 step_key, subkey = jax.random.split(subkey)
-                trajectories = self.simulate_forward_process(
-                    initial_val, rng_key=step_key, num_batches=batch_size
+                trajs = self.sde.simulate_trajectories(
+                    initial_val, key=step_key, num_batches=batch_size
                 )
-                gradients, covariances = gradients_and_covariances(
-                    trajectories, self.sde.ts, self.sde.drift, self.sde.diffusion
-                )
-                yield (
-                    trajectories[:, 1:],
-                    gradients,
-                    covariances,
-                )
+                grads, covs = self.sde.grad_and_covariance(trajs)
+                yield trajs[:, 1:], grads, covs,
 
         return generator
 
@@ -161,7 +113,6 @@ class DiffusionBridge:
         rng_key: jax.Array,
         batch_size: int,
         initial_val: jnp.ndarray,
-        terminal_val: jnp.ndarray,
         score_p: Callable,
     ) -> callable:
         reverse_sde = reverse(self.sde, score_p)
@@ -170,24 +121,9 @@ class DiffusionBridge:
             subkey = rng_key
             while True:
                 step_key, subkey = jax.random.split(subkey)
-                trajectories = self.simulate_backward_bridge(
-                    initial_val,
-                    terminal_val,
-                    score_p=score_p,
-                    rng_key=step_key,
-                    num_batches=batch_size,
-                )
-                gradients, covariances = gradients_and_covariances(
-                    trajectories,
-                    reverse_sde.ts,
-                    reverse_sde.drift,
-                    reverse_sde.diffusion,
-                )
-                yield (
-                    trajectories[:, 1:],
-                    gradients,
-                    covariances,
-                )
+                trajs = reverse_sde.simulate_trajectories(initial_val, batch_size, step_key)
+                grads, covs = reverse_sde.grad_and_covariance(trajs)
+                yield trajs[:, 1:], grads, covs
 
         return generator
 
@@ -232,9 +168,7 @@ class DiffusionBridge:
                 b=b_size,
             )
 
-            trajectories = rearrange(
-                trajectories, "b n d -> (b n) d"
-            )  # (B*N, 2*n_bases)
+            trajectories = rearrange(trajectories, "b n d -> (b n) d")  # (B*N, 2*n_bases)
             gradients = rearrange(gradients, "b n d -> (b n) d")  # (B*N, 2*n_bases)
             covariances = rearrange(
                 covariances, "b n d1 d2 -> (b n) d1 d2"
@@ -288,8 +222,7 @@ class DiffusionBridge:
             ],
             learning_rate=training_params["learning_rate"],
             warmup_steps=training_params["warmup_steps"],
-            decay_steps=training_params["num_epochs"]
-            * training_params["num_batches_per_epoch"],
+            decay_steps=training_params["num_epochs"] * training_params["num_batches_per_epoch"],
         )
         pbar = tqdm(
             range(training_params["num_epochs"]),
@@ -367,9 +300,7 @@ class DiffusionBridge:
                 b=b_size,
             )
 
-            trajectories = rearrange(
-                trajectories, "b n d -> (b n) d"
-            )  # (B*N, 2*n_bases)
+            trajectories = rearrange(trajectories, "b n d -> (b n) d")  # (B*N, 2*n_bases)
             gradients = rearrange(gradients, "b n d -> (b n) d")  # (B*N, 2*n_bases)
             covariances = rearrange(
                 covariances, "b n d1 d2 -> (b n) d1 d2"
@@ -412,8 +343,7 @@ class DiffusionBridge:
             ],
             learning_rate=training_params["learning_rate"],
             warmup_steps=training_params["warmup_steps"],
-            decay_steps=training_params["num_epochs"]
-            * training_params["num_batches_per_epoch"],
+            decay_steps=training_params["num_epochs"] * training_params["num_batches_per_epoch"],
         )
         pbar = tqdm(
             range(training_params["num_epochs"]),

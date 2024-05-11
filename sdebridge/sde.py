@@ -6,12 +6,12 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 
+from sdebridge.solver import euler_maruyama, gradients_and_covariances
+
 # Kernels
 
 
-def gaussian_Q_half_kernel(
-    landmarks: jnp.ndarray, alpha: float, sigma: float
-) -> jnp.ndarray:
+def gaussian_Q_half_kernel(landmarks: jnp.ndarray, alpha: float, sigma: float) -> jnp.ndarray:
     xy_coords = landmarks.reshape(-1, 2)
     diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
     dis = jnp.sum(jnp.square(diff), axis=-1)
@@ -22,9 +22,7 @@ def gaussian_Q_half_kernel(
 
 def gaussian_kernel_2d(alpha: float, sigma: float) -> callable:
     def k(x, y):
-        return alpha * jnp.exp(
-            -0.5 * jnp.sum(jnp.square(x - y), axis=-1) / (sigma**2)
-        )
+        return alpha * jnp.exp(-0.5 * jnp.sum(jnp.square(x - y), axis=-1) / (sigma**2))
 
     return k
 
@@ -76,6 +74,25 @@ class SDE:
         # _jacobian = jax.jacfwd(self.covariance, argnums=0, holomorphic=True)(val, time)
         # return jnp.trace(_jacobian, axis1=-2, axis2=-1)
         return jnp.trace(_jacobian)
+
+    def simulate_trajectories(self, initial_val: jnp.ndarray, num_batches: int, key: jax.Array):
+        keys = jax.random.split(key, num_batches)
+        batched = jax.vmap(euler_maruyama, in_axes=(0, None, None, None, None, None))
+        trajectories = batched(
+            keys,
+            initial_val,
+            self.ts,
+            self.drift,
+            self.diffusion,
+            self.bm_shape,
+        )
+        return trajectories
+
+    def grad_and_covariance(self, trajs):
+        gradients, covariances = gradients_and_covariances(
+            trajs, self.ts, self.drift, self.diffusion
+        )
+        return gradients, covariances
 
 
 def reverse(sde, score_fun):
@@ -158,10 +175,7 @@ def damped_brownian_sde(T, N, dim, n_bases, alpha):
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         return alpha * jnp.diag(
-            1.0
-            / jnp.concatenate(
-                [jnp.arange(1, dim // 2 + 1), jnp.arange(1, dim // 2 + 1)]
-            )
+            1.0 / jnp.concatenate([jnp.arange(1, dim // 2 + 1), jnp.arange(1, dim // 2 + 1)])
         )
 
     return SDE(
@@ -234,23 +248,17 @@ def fourier_gaussian_kernel_sde(
 ):
     n_padding = (n_samples - n_bases) // 2
 
-    base_fn = lambda freq: jnp.exp(
-        1j * jnp.arange(-n_samples // 2, n_samples // 2) * freq
-    )
+    base_fn = lambda freq: jnp.exp(1j * jnp.arange(-n_samples // 2, n_samples // 2) * freq)
     freqs = jnp.fft.fftshift(jnp.fft.fftfreq(n_bases, d=1 / (2.0 * jnp.pi)))
     fourier_basis = jax.vmap(base_fn)(freqs)  # (n_bases, n_samples)
 
     grid = jnp.linspace(grid_range[0], grid_range[1], n_grid)
-    grid = jnp.stack(
-        jnp.meshgrid(grid, grid, indexing="xy"), axis=-1
-    )  # (n_grid, n_grid, 2)
+    grid = jnp.stack(jnp.meshgrid(grid, grid, indexing="xy"), axis=-1)  # (n_grid, n_grid, 2)
 
     def evaluate_S(S: jnp.ndarray) -> jnp.ndarray:
         S_coeffs = jnp.fft.fft(S, n=n_samples, axis=0) / jnp.sqrt(n_samples)
         S_coeffs = jnp.fft.fftshift(S_coeffs, axes=0)  # (n_samples, 2)
-        S_eval = jnp.matmul(fourier_basis, S_coeffs) / jnp.sqrt(
-            n_samples
-        )  # (n_bases, 2)
+        S_eval = jnp.matmul(fourier_basis, S_coeffs) / jnp.sqrt(n_samples)  # (n_bases, 2)
         return S_eval
 
     def evaluate_X(val: jnp.ndarray) -> jnp.ndarray:
@@ -262,9 +270,7 @@ def fourier_gaussian_kernel_sde(
             mode="constant",
             constant_values=0,
         )  # (n_samples, 2)
-        X_eval = jnp.matmul(fourier_basis, X_coeffs) / jnp.sqrt(
-            n_samples
-        )  # (n_bases, 2)
+        X_eval = jnp.matmul(fourier_basis, X_coeffs) / jnp.sqrt(n_samples)  # (n_bases, 2)
         return X_eval
 
     def evaluate_Q(val: jnp.ndarray) -> jnp.ndarray:
@@ -290,12 +296,8 @@ def fourier_gaussian_kernel_sde(
 
     def evaluate_diffusion(val: jnp.ndarray) -> jnp.ndarray:
         Q_eval = evaluate_Q(val)
-        diffusion = jnp.fft.fft2(
-            Q_eval, axes=(1, 2), norm="ortho"
-        )  # (n_bases, n_grid, n_grid)
-        diffusion = jnp.fft.ifft(
-            diffusion, axis=0, norm="ortho"
-        )  # (n_bases, n_grid, n_grid
+        diffusion = jnp.fft.fft2(Q_eval, axes=(1, 2), norm="ortho")  # (n_bases, n_grid, n_grid)
+        diffusion = jnp.fft.ifft(diffusion, axis=0, norm="ortho")  # (n_bases, n_grid, n_grid
         diffusion = rearrange(diffusion, "b g1 g2 -> b (g1 g2)")  # (n_bases, n_grid**2)
         return diffusion
 
