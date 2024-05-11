@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Callable, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -96,6 +96,19 @@ def eval_score(state: TrainState, val: jax.Array, time: jnp.ndarray) -> jax.Arra
     return score_real + 1j * score_imag
 
 
+def score_fn(state: TrainState) -> Callable:
+    def score(val, time):
+        result = state.apply_fn(
+            {"params": state.params, "batch_stats": state.batch_stats},
+            x=val[None],
+            t=jnp.asarray([time]),
+            train=False,
+        )
+        return result
+
+    return score
+
+
 def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     if type(dtype) == tf.DType and type(shape) == list:
         dataset = tf.data.Dataset.from_generator(
@@ -120,3 +133,12 @@ def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.nda
     # x, weight = jnp.abs(x), jnp.abs(weight)
     norm = jnp.einsum("...i,...ij,...j->...", jnp.conj(x), weight, x)
     return jnp.abs(norm)
+
+
+@jax.jit
+@jax.vmap
+def weighted_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
+    assert x.shape[0] == weight.shape[0]
+    Wx = jnp.dot(weight, x)
+    xWx = jnp.dot(x, Wx)
+    return xWx
