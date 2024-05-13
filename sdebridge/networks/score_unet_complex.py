@@ -23,10 +23,9 @@ class ScoreUNet(nn.Module):
         assert (
             self.encoder_layer_dims[-1] == self.decoder_layer_dims[0]
         ), "Bottleneck dim does not match"
-        x_init = x
         time_embedding = get_time_embedding(self.time_embedding_dim)
         t = jax.vmap(time_embedding, in_axes=0)(t)
-        x = x.reshape((x.shape[0], -1))
+
         x = InputDense(self.init_embedding_dim, self.act_fn)(x)
 
         # downsample
@@ -54,7 +53,6 @@ class ScoreUNet(nn.Module):
 
         # out
         score = Dense(self.output_dim)(x)
-        score = score.reshape(x_init.shape)
         return score
 
 
@@ -113,7 +111,9 @@ class InputDense(nn.Module):
     kernel_init: Callable = nn.initializers.xavier_normal()
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, x_complex: jnp.ndarray) -> jnp.ndarray:
+        x_real, x_complex = jnp.real(x_complex), jnp.imag(x_complex)
+        x = jnp.concatenate([x_real, x_complex], axis=-1)
         x = nn.Dense(self.output_dims, kernel_init=self.kernel_init)(x)
         x = _get_act_fn(self.act_fn)(x)
         return x

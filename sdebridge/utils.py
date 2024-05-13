@@ -137,8 +137,8 @@ def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.nda
 
 @jax.jit
 @jax.vmap
-def weighted_norm_square(x: jax.Array, weight: jax.Array) -> jax.Array:
-    assert x.shape[0] == weight.shape[0]
-    Wx = jnp.dot(weight, x)
-    xWx = jnp.dot(x, Wx)
+def weighted_norm_square(x: jax.Array, covariance: jax.Array) -> jax.Array:
+    assert x.shape[0] == covariance.shape[0]
+    Wx = (covariance @ x).flatten()
+    xWx = jnp.dot(x.flatten(), Wx)
     return xWx

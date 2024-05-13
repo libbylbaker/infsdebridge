@@ -138,6 +138,7 @@ class DiffusionBridge:
         training_params = setup_params["training"]
         b_size = training_params["batch_size"]
         load_size = training_params["load_size"]
+        num_batches_per_epoch = int(load_size / b_size)
         net = setup_params["neural_net"]
 
         score_p_net = net(**net_params)
@@ -148,31 +149,26 @@ class DiffusionBridge:
             generator=data_generator,
             dtype=(tf.float64, tf.float64, tf.float64),
             shape=[
-                (load_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim),
-                (load_size, self.sde.N - 1, self.sde.n_bases * self.sde.dim),
-                (
-                    load_size,
-                    self.sde.N - 1,
-                    self.sde.n_bases * self.sde.dim,
-                    self.sde.n_bases * self.sde.dim,
-                ),
+                (load_size, self.sde.N - 1, self.sde.n_bases, self.sde.dim),
+                (load_size, self.sde.N - 1, self.sde.n_bases, self.sde.dim),
+                (load_size, self.sde.N - 1, self.sde.n_bases, self.sde.n_bases),
             ],
         )
 
         @jax.jit
         def train_step(state, batch: tuple):
-            trajectories, gradients, covariances = batch  # (B, N, 2*n_bases)
+            trajectories, gradients, covariances = batch  # (B, N, n_bases, 2)
             ts = rearrange(
                 repeat(self.sde.ts[1:], "n -> b n", b=b_size),
                 "b n -> (b n) 1",
                 b=b_size,
             )
 
-            trajectories = rearrange(trajectories, "b n d -> (b n) d")  # (B*N, 2*n_bases)
-            gradients = rearrange(gradients, "b n d -> (b n) d")  # (B*N, 2*n_bases)
+            trajectories = rearrange(trajectories, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
+            gradients = rearrange(gradients, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
             covariances = rearrange(
                 covariances, "b n d1 d2 -> (b n) d1 d2"
-            )  # (B*N, 2*n_bases, 2*n_bases)
+            )  # (B*N, n_bases, n_bases)
 
             def loss_fn_complex(params) -> tuple:
                 score, updates = state.apply_fn(
@@ -199,7 +195,7 @@ class DiffusionBridge:
                     mutable=["batch_stats"],
                 )  # (B*N, 2*n_bases)
                 loss = weighted_norm_square(
-                    x=score - gradients, weight=covariances
+                    x=score - gradients, covariance=covariances
                 )  # (B*N, d) -> (B*N, )
                 loss = 0.5 * self.sde.dt * jnp.mean(loss, axis=0)
                 return loss, updates
@@ -217,12 +213,12 @@ class DiffusionBridge:
             model=score_p_net,
             rng_key=network_init_rng_key,
             input_shapes=[
-                (b_size, self.sde.dim * self.sde.n_bases),
+                (b_size, self.sde.n_bases, self.sde.dim),
                 (b_size, 1),
             ],
             learning_rate=training_params["learning_rate"],
             warmup_steps=training_params["warmup_steps"],
-            decay_steps=training_params["num_epochs"] * training_params["num_batches_per_epoch"],
+            decay_steps=training_params["num_epochs"] * num_batches_per_epoch,
         )
         pbar = tqdm(
             range(training_params["num_epochs"]),
@@ -234,7 +230,7 @@ class DiffusionBridge:
         for i in pbar:
             total_loss = 0
             load = next(iter_dataset)
-            for b in range(int(load_size / b_size)):
+            for b in range(num_batches_per_epoch):
                 tmp1, tmp2, tmp3 = load
                 batch = (
                     tmp1[b * b_size : (b + 1) * b_size],
@@ -243,7 +239,7 @@ class DiffusionBridge:
                 )
                 state, loss = train_step(state, batch)
                 total_loss += loss
-            epoch_loss = total_loss / training_params["num_batches_per_epoch"]
+            epoch_loss = total_loss / num_batches_per_epoch
             pbar.set_postfix(Epoch=i + 1, loss=f"{epoch_loss:.4f}")
 
         return state

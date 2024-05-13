@@ -15,8 +15,8 @@ def gaussian_Q_half_kernel(landmarks: jnp.ndarray, alpha: float, sigma: float) -
     xy_coords = landmarks.reshape(-1, 2)
     diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
     dis = jnp.sum(jnp.square(diff), axis=-1)
-    kernel = alpha * jnp.exp(-dis / sigma**2)
-    Q_half = jnp.kron(kernel, jnp.eye(2))
+    Q_half = alpha * jnp.exp(-dis / sigma**2)
+    # Q_half = jnp.kron(kernel, jnp.eye(2))
     return Q_half
 
 
@@ -151,11 +151,12 @@ def bridge(sde, score_fun):
 
 def brownian_sde(T, N, dim, n_bases, sigma):
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
+        assert val.ndim == 2
         return jnp.zeros_like(val)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        assert val.ndim == 1
-        return sigma * jnp.eye(val.size)
+        assert val.ndim == 2
+        return sigma * jnp.eye(n_bases)
 
     return SDE(
         T=T,
@@ -164,7 +165,29 @@ def brownian_sde(T, N, dim, n_bases, sigma):
         n_bases=n_bases,
         drift=drift,
         diffusion=diffusion,
-        bm_shape=(dim * n_bases,),
+        bm_shape=(n_bases, dim),
+        params=None,
+    )
+
+
+def trace_brownian_sde(T, N, dim, n_bases, alpha, power):
+    def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
+        assert val.ndim == 2
+        return jnp.zeros_like(val)
+
+    def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
+        assert val.ndim == 2
+        k = jnp.arange(1, n_bases + 1)
+        return jnp.diag(alpha / k**power)
+
+    return SDE(
+        T=T,
+        N=N,
+        dim=dim,
+        n_bases=n_bases,
+        drift=drift,
+        diffusion=diffusion,
+        bm_shape=(n_bases, dim),
         params=None,
     )
 
@@ -185,7 +208,7 @@ def damped_brownian_sde(T, N, dim, n_bases, alpha):
         n_bases=n_bases,
         drift=drift,
         diffusion=diffusion,
-        bm_shape=(dim * n_bases,),
+        bm_shape=(n_bases * dim,),
         params=None,
     )
 
@@ -204,7 +227,7 @@ def gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma):
         n_bases=n_bases,
         drift=drift,
         diffusion=diffusion,
-        bm_shape=(dim * n_bases,),
+        bm_shape=(n_bases, dim),
         params=None,
     )
 
@@ -220,15 +243,17 @@ def gaussian_independent_kernel_sde(
     grid_size: int,
 ):
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
+        assert val.ndim == 2
         return jnp.zeros_like(val)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
+        assert val.ndim == 2
         kernel = gaussian_kernel_independent(
             alpha, sigma, grid_range=grid_range, grid_size=grid_size
         )
         val = val.reshape(-1, dim)
         Q_half = kernel(val)
-        Q_half = jnp.kron(Q_half, jnp.eye(2))
+        # Q_half = jnp.kron(Q_half, jnp.eye(2))
         return Q_half
 
     return SDE(
@@ -238,77 +263,63 @@ def gaussian_independent_kernel_sde(
         n_bases=n_bases,
         drift=drift,
         diffusion=diffusion,
-        bm_shape=(grid_size**2 * dim,),
+        bm_shape=(grid_size**2, dim),
         params=None,
     )
 
 
-def fourier_gaussian_kernel_sde(
-    T, N, dim, n_bases, alpha, sigma, init_S, n_grid, grid_range, n_samples
-):
-    n_padding = (n_samples - n_bases) // 2
+def fourier_gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma, n_grid, grid_range, n_samples):
+    def fourier_coefficients(array, num_bases):
+        """Array of shape [..., pts, dim]
+        Returns array of shape [..., :2*num_bases, dim]"""
 
-    base_fn = lambda freq: jnp.exp(1j * jnp.arange(-n_samples // 2, n_samples // 2) * freq)
-    freqs = jnp.fft.fftshift(jnp.fft.fftfreq(n_bases, d=1 / (2.0 * jnp.pi)))
-    fourier_basis = jax.vmap(base_fn)(freqs)  # (n_bases, n_samples)
+        complex_coefficients = jnp.fft.rfft(array, norm="forward", axis=-2)[..., :num_bases, :]
+        coeffs = jnp.stack([complex_coefficients.real, complex_coefficients.imag], axis=0)
+        coeffs = coeffs.reshape(
+            *complex_coefficients.shape[:-2], -1, complex_coefficients.shape[-1]
+        )
+        return coeffs
 
-    grid = jnp.linspace(grid_range[0], grid_range[1], n_grid)
-    grid = jnp.stack(jnp.meshgrid(grid, grid, indexing="xy"), axis=-1)  # (n_grid, n_grid, 2)
+    def real_fourier(array, axis):
+        complex_coefficients = jnp.fft.rfft(array, norm="forward", axis=axis)
+        coeffs = jnp.concatenate([complex_coefficients.real, complex_coefficients.imag], axis=axis)
+        return coeffs
 
-    def evaluate_S(S: jnp.ndarray) -> jnp.ndarray:
-        S_coeffs = jnp.fft.fft(S, n=n_samples, axis=0) / jnp.sqrt(n_samples)
-        S_coeffs = jnp.fft.fftshift(S_coeffs, axes=0)  # (n_samples, 2)
-        S_eval = jnp.matmul(fourier_basis, S_coeffs) / jnp.sqrt(n_samples)  # (n_bases, 2)
-        return S_eval
+    def inverse_fourier(coefficients, num_pts):
+        """Array of shape [..., 2*num_bases, dim]
+        Returns array of shape [..., num_pts, dim]"""
+        assert coefficients.shape[-2] % 2 == 0
+        num_bases = int(coefficients.shape[-2] / 2)
+        coeffs_real = coefficients[..., :num_bases, :]
+        coeffs_im = coefficients[..., num_bases:, :]
+        complex_coefficients = coeffs_real + 1j * coeffs_im
+        return jnp.fft.irfft(complex_coefficients, norm="forward", n=num_pts, axis=-2)
 
-    def evaluate_X(val: jnp.ndarray) -> jnp.ndarray:
-        X_coeffs = jnp.stack(jnp.split(val, 2, axis=-1), axis=-1)  # (n_bases, 2)
-        X_coeffs = X_coeffs / jnp.sqrt(n_samples)
-        X_coeffs = jnp.pad(
-            X_coeffs,
-            ((n_padding, n_padding), (0, 0)),
-            mode="constant",
-            constant_values=0,
-        )  # (n_samples, 2)
-        X_eval = jnp.matmul(fourier_basis, X_coeffs) / jnp.sqrt(n_samples)  # (n_bases, 2)
-        return X_eval
+    gaussian_grid_kernel = gaussian_kernel_independent(alpha, sigma, grid_range, n_grid, dim)
 
-    def evaluate_Q(val: jnp.ndarray) -> jnp.ndarray:
-        kernel = gaussian_kernel_2d(alpha, sigma)
-        X_eval = evaluate_X(val)
-        S_eval = X_eval + evaluate_S(init_S)  # (n_bases, 2)
-        Q_eval = jax.vmap(
-            jax.vmap(
-                jax.vmap(
-                    kernel,
-                    in_axes=(None, 0),
-                    out_axes=0,
-                ),
-                in_axes=(None, 1),
-                out_axes=1,
-            ),
-            in_axes=(0, None),
-            out_axes=0,
-        )(
-            S_eval, grid
-        )  # (n_bases, n_grid, n_grid)
-        return Q_eval
+    def fourier_grid():
+        pass
 
-    def evaluate_diffusion(val: jnp.ndarray) -> jnp.ndarray:
-        Q_eval = evaluate_Q(val)
-        diffusion = jnp.fft.fft2(Q_eval, axes=(1, 2), norm="ortho")  # (n_bases, n_grid, n_grid)
-        diffusion = jnp.fft.ifft(diffusion, axis=0, norm="ortho")  # (n_bases, n_grid, n_grid
-        diffusion = rearrange(diffusion, "b g1 g2 -> b (g1 g2)")  # (n_bases, n_grid**2)
-        return diffusion
+    def evaluate_Q(X_coeffs: jnp.ndarray) -> jnp.ndarray:
+        X_pts = inverse_fourier(X_coeffs, n_samples)  # (n_bases, 2)
+        Q_half = gaussian_grid_kernel(X_pts)
+        return Q_half.reshape(n_samples, n_grid, n_grid)
 
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         return jnp.zeros_like(val)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        diffusion_ = evaluate_diffusion(val)
-        return jnp.kron(jnp.eye(2), diffusion_)
+        Q_eval = evaluate_Q(val)
+        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward")[:n_bases]
+        Q_eval = jnp.fft.ifft2(Q_eval, axes=(1, 2), norm="forward")
 
-    return SDE(T, N, dim, n_bases, drift, diffusion, bm_shape=(grid.size,), params=None)
+        diff = Q_eval.reshape(n_bases, n_grid**2)
+        coeffs = jnp.stack([diff.real, diff.imag], axis=0)
+        coeffs = coeffs.reshape(*diff.shape[:-2], -1, diff.shape[-1])
+
+        return coeffs
+
+    return SDE(T, N, dim, n_bases, drift, diffusion, bm_shape=(n_grid**2, dim), params=None)
 
 
 # class FourierGaussianKernelSDE(SDE):
