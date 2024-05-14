@@ -2,11 +2,6 @@ import jax
 import jax.numpy as jnp
 
 
-def batch_matmul(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
-    """Batch matrix multiplication"""
-    return jax.vmap(jnp.matmul, in_axes=(0, 0), out_axes=0)(A, B)
-
-
 def euler_maruyama(key, x0, ts, drift, diffusion, bm_shape=None):
     if bm_shape is None:
         bm_shape = x0.shape
@@ -27,7 +22,6 @@ def euler_maruyama(key, x0, ts, drift, diffusion, bm_shape=None):
 
 
 def gradients_and_covariances(xs, ts, drift, diffusion):
-    @jax.jit
     def grad_and_cov(t0: float, X0: jax.Array, t1: float, X1: jax.Array):
         dt = t1 - t0
         drift_last = drift(X0, t0)
