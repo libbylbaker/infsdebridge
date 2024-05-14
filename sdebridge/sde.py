@@ -1,10 +1,10 @@
 import dataclasses
+import functools
 from functools import partial
 from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
-from einops import rearrange
 
 from sdebridge.solver import euler_maruyama, gradients_and_covariances
 
@@ -16,7 +16,6 @@ def gaussian_Q_half_kernel(landmarks: jnp.ndarray, alpha: float, sigma: float) -
     diff = xy_coords[:, jnp.newaxis, :] - xy_coords[jnp.newaxis, :, :]
     dis = jnp.sum(jnp.square(diff), axis=-1)
     Q_half = alpha * jnp.exp(-dis / sigma**2)
-    # Q_half = jnp.kron(kernel, jnp.eye(2))
     return Q_half
 
 
@@ -44,7 +43,7 @@ def gaussian_kernel_independent(alpha, sigma, grid_range, grid_size, dim=2):
     return kernel
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True, eq=True)
 class SDE:
     T: float
     N: int
@@ -63,39 +62,50 @@ class SDE:
     def ts(self):
         return jnp.linspace(0, self.T, self.N)
 
+    @partial(jax.jit, static_argnums=0)
     def covariance(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         """covariance term: sigma @ sigma^T"""
         _diffusion = self.diffusion(val, time)
         return jnp.matmul(_diffusion, jnp.conj(_diffusion).T)
 
+    @partial(jax.jit, static_argnums=0)
     def div_covariance(self, val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         """divergence of covariance term: nabla_x (sigma @ sigma^T)"""
         _jacobian = jax.jacfwd(self.covariance, argnums=0)(val, time)
-        # _jacobian = jax.jacfwd(self.covariance, argnums=0, holomorphic=True)(val, time)
-        # return jnp.trace(_jacobian, axis1=-2, axis2=-1)
         return jnp.trace(_jacobian)
 
+    @partial(jax.jit, static_argnums=(0, 2))
     def simulate_trajectories(self, initial_val: jnp.ndarray, num_batches: int, key: jax.Array):
         keys = jax.random.split(key, num_batches)
-        batched = jax.vmap(euler_maruyama, in_axes=(0, None, None, None, None, None))
-        trajectories = batched(
-            keys,
-            initial_val,
-            self.ts,
-            self.drift,
-            self.diffusion,
-            self.bm_shape,
+        euler = functools.partial(
+            euler_maruyama,
+            x0=initial_val,
+            ts=self.ts,
+            drift=self.drift,
+            diffusion=self.diffusion,
+            bm_shape=self.bm_shape,
         )
+        batched_eul = jax.vmap(euler, in_axes=0)
+        trajectories = batched_eul(keys)
         return trajectories
 
+    @partial(jax.jit, static_argnums=0)
     def grad_and_covariance(self, trajs):
-        gradients, covariances = gradients_and_covariances(
-            trajs, self.ts, self.drift, self.diffusion
-        )
+        gradients, covariances = gradients_and_covariances(trajs, self.ts, self.drift, self.diffusion)
         return gradients, covariances
 
 
 def reverse(sde, score_fun):
+    """Drift and diffusion for backward bridge process (Z*(t)):
+        dZ*(t) = {-f(T-t, Z*(t)) + Sigma(T-t, Z*(t)) s(T-t, Z*(t)) + div Sigma(T-t, Z*(t))} dt + g(T-t, Z*(t)) dW(t)
+
+        score_fun (callable): nabla log p(x, t), either a closed form or a neural network.
+
+    Returns:
+        results: trajectories: jax.Array, (B, N, d) backward bridge trajectories
+    !!! N.B. trajectories = [Z*(T), ..., Z*(0)], which is opposite to expected simulate_backward_bridge !!!
+    """
+
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         inverted_time = sde.T - time
         rev_drift_term = sde.drift(val=val, time=inverted_time)
@@ -124,7 +134,15 @@ def reverse(sde, score_fun):
 
 
 def bridge(sde, score_fun):
-    """Bridge the SDE using either pre-assigned score h or neural network approximation"""
+    """Drift and diffusion for the forward bridge process (X*(t)) which is the "backward of backward":
+        dX*(t) = {-f(t, X*(t)) + Sigma(t, X*(t)) [s*(t, X*(t)) - s(t, X*(t))]} dt + g(t, X*(t)) dW(t)
+
+    Args:
+        score_fun  (callable): nabla log h(x, t), either a closed form or a neural network.
+
+    Returns:
+        results: "trajectories": jax.Array, (B, N, d) forward bridge trajectories (in normal order)
+    """
 
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         orig_drift_term = sde.drift(val=val, time=time)
@@ -227,9 +245,7 @@ def gaussian_independent_kernel_sde(
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         assert val.ndim == 2
-        kernel = gaussian_kernel_independent(
-            alpha, sigma, grid_range=grid_range, grid_size=grid_size
-        )
+        kernel = gaussian_kernel_independent(alpha, sigma, grid_range=grid_range, grid_size=grid_size)
         val = val.reshape(-1, dim)
         Q_half = kernel(val)
         # Q_half = jnp.kron(Q_half, jnp.eye(2))
@@ -282,4 +298,4 @@ def fourier_gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma, n_grid, grid_r
 
         return coeffs
 
-    return SDE(T, N, dim, n_bases, drift, diffusion, bm_shape=(n_grid**2, dim), params=None)
+    return SDE(T, N, dim, 2 * n_bases, drift, diffusion, bm_shape=(n_grid**2, dim), params=None)
