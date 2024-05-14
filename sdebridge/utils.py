@@ -20,10 +20,6 @@ def unsqueeze(x: jax.Array, axis: int):
     return jnp.expand_dims(x, axis=axis)
 
 
-complex_to_real = lambda z: jnp.concatenate([jnp.real(z), jnp.imag(z)], axis=-1)
-real_to_complex = lambda x: x[..., :2] + 1j * x[..., 2:]
-
-
 ### Network helpers
 
 
@@ -97,6 +93,7 @@ def eval_score(state: TrainState, val: jax.Array, time: jnp.ndarray) -> jax.Arra
 
 
 def score_fn(state: TrainState) -> Callable:
+    @jax.jit
     def score(val, time):
         result = state.apply_fn(
             {"params": state.params, "batch_stats": state.batch_stats},
@@ -125,14 +122,6 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
         raise ValueError("Invalid dtype or shape")
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
-
-
-@jax.jit
-@jax.vmap
-def complex_weighted_norm_square(x: jnp.ndarray, weight: jnp.ndarray) -> jnp.ndarray:
-    # x, weight = jnp.abs(x), jnp.abs(weight)
-    norm = jnp.einsum("...i,...ij,...j->...", jnp.conj(x), weight, x)
-    return jnp.abs(norm)
 
 
 @jax.jit
