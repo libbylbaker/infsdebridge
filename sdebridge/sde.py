@@ -89,7 +89,7 @@ class SDE:
         trajectories = batched_eul(keys)
         return trajectories
 
-    @partial(jax.jit, static_argnums=0)
+    # @partial(jax.jit, static_argnums=0)
     def grad_and_covariance(self, trajs):
         gradients, covariances = gradients_and_covariances(trajs, self.ts, self.drift, self.diffusion)
         return gradients, covariances
@@ -287,9 +287,10 @@ def fourier_gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma, n_grid, grid_r
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         return jnp.zeros_like(val)
 
+    @jax.jit
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         Q_eval = evaluate_Q(val)
-        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward")[:n_bases]
+        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward", n=2 * (n_bases - 1))
         Q_eval = jnp.fft.ifft2(Q_eval, axes=(1, 2), norm="backward")
 
         diff = Q_eval.reshape(n_bases, n_grid**2)
