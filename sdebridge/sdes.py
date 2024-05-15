@@ -278,8 +278,8 @@ def gaussian_independent_kernel_sde(
 
 
 def fourier_gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma, n_grid, grid_range, n_samples) -> SDE:
-    if n_samples / 2 + 1 < n_bases:
-        raise ValueError("(n_samples/2 + 1)  must be more than n_bases")
+    # if n_samples / 2 + 1 < n_bases:
+    #     raise ValueError("(n_samples/2 + 1)  must be more than n_bases")
 
     def inverse_fourier(coefficients, num_pts):
         """Array of shape [..., 2*num_bases, dim]
