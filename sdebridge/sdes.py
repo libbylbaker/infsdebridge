@@ -162,8 +162,8 @@ def euler_maruyama_grad_cov(
     x0,
     sde,
 ) -> tuple:
-    def step_fun(key_x_grad_cov_t, dt):
-        k, x, grad, cov_, t = key_x_grad_cov_t
+    def step_fun(key_x_t, dt):
+        k, x, t = key_x_t
         k, subkey = jax.random.split(k, num=2)
         eps = jax.random.normal(subkey, shape=sde.bm_shape)
         diffusion = sde.diffusion(x, t) @ eps
@@ -171,12 +171,11 @@ def euler_maruyama_grad_cov(
         xnew = x + dt * sde.drift(x, t) + jnp.sqrt(dt) * diffusion
         tnew = t + dt
         covnew = cov(sde, x, t)
-        gradnew = -1 / dt * jnp.linalg.inv(cov_) @ diffusion
+        gradnew = -1 / dt * jnp.linalg.inv(covnew) @ diffusion
 
-        return (k, xnew, gradnew, covnew, tnew), (xnew, gradnew, covnew)
+        return (k, xnew, tnew), (xnew, gradnew, covnew)
 
-    cov0 = cov(sde, x0, sde.ts[0])
-    init = (key, x0, jnp.empty_like(x0), cov0, sde.ts[0])
+    init = (key, x0, sde.ts[0])
     _, (xs, grads, covs) = jax.lax.scan(step_fun, xs=jnp.diff(sde.ts), init=init)
 
     return xs, grads, covs
