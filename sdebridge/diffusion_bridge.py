@@ -10,18 +10,17 @@ import tensorflow as tf
 from einops import rearrange, repeat
 from tqdm import tqdm
 
-from sdebridge.networks.score_unet import ScoreUNet
-from sdebridge.sde import SDE, bridge, reverse
+from sdebridge import sdes
 from sdebridge.utils import create_train_state, get_iterable_dataset, weighted_norm_square
 
 
 def trajectory_generator(
-    sde: SDE,
+    sde: sdes.SDE,
     key: jax.Array,
     batch_size: int,
-    initial_val: jnp.ndarray,
-) -> callable:
-    initial_vals = jnp.tile(initial_val, reps=(batch_size, 1, 1))
+    x0: jnp.ndarray,
+) -> Callable:
+    initial_vals = jnp.tile(x0, reps=(batch_size, 1, 1))
 
     def generator():
         subkey = key
@@ -36,7 +35,7 @@ def trajectory_generator(
 
 
 def learn_p_score(
-    sde: SDE,
+    sde: sdes.SDE,
     initial_val: jax.Array,
     key: jax.Array,
     *,
@@ -70,7 +69,7 @@ def learn_p_score(
 
 
 def learn_p_star_score(
-    forward_sde: SDE,
+    forward_sde: sdes.SDE,
     initial_val: jax.Array,
     key: jax.Array,
     score_p: Callable,
@@ -89,7 +88,7 @@ def learn_p_star_score(
         "b n -> (b n) 1",
         b=batch_size,
     )
-    reverse_sde = reverse(forward_sde, score_p)
+    reverse_sde = sdes.reverse(forward_sde, score_p)
     gen = trajectory_generator(reverse_sde, key, load_size, initial_val)
 
     return learn_score(
@@ -108,7 +107,7 @@ def learn_p_star_score(
 
 
 def learn_score(
-    sde: SDE,
+    sde: sdes.SDE,
     generator: Callable,
     key: jax.Array,
     ts: jax.Array,
@@ -167,7 +166,7 @@ def learn_score(
 
     state = create_train_state(
         model=score_net,
-        rng_key=network_key,
+        key=network_key,
         input_shapes=[
             (batch_size, sde.n_bases, sde.dim),
             (batch_size, 1),
@@ -207,7 +206,7 @@ def batch_matmul(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
 
 
 def euler_and_grad_and_cov(
-    sde: SDE,
+    sde: sdes.SDE,
     initial_vals: jnp.ndarray,
     rng_key: jax.Array,
 ) -> tuple:
@@ -241,7 +240,7 @@ def euler_and_grad_and_cov(
         # diffusion_step = batch_matmul(_diffusion, brownian_step)  # (B, 2*n_bases)
         diffusion_step = _diffusion @ brownian_step
 
-        _covariance = jax.vmap(sde.covariance, in_axes=(0, None))(state.vals, time)  # (B, 2*n_bases, 2*n_bases)
+        _covariance = jax.vmap(sdes.cov, in_axes=(None, 0, None))(sde, state.vals, time)  # (B, 2*n_bases, 2*n_bases)
         _inv_covariance = jax.vmap(partial(jnp.linalg.pinv, hermitian=True, rcond=None))(
             _covariance
         )  # (B, 2*n_bases, 2*n_bases)

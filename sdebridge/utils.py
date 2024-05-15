@@ -10,6 +10,27 @@ from flax import struct
 from flax.training import train_state
 
 
+def fourier_coefficients(array, num_bases):
+    """Array of shape [..., pts, dim]
+    Returns array of shape [..., :2*num_bases, dim]"""
+
+    complex_coefficients = jnp.fft.rfft(array, norm="forward", axis=-2)[..., :num_bases, :]
+    coeffs = jnp.stack([complex_coefficients.real, complex_coefficients.imag], axis=0)
+    coeffs = coeffs.reshape(*complex_coefficients.shape[:-2], -1, complex_coefficients.shape[-1])
+    return coeffs
+
+
+def inverse_fourier(coefficients, num_pts):
+    """Array of shape [..., 2*num_bases, dim]
+    Returns array of shape [..., num_pts, dim]"""
+    assert coefficients.shape[-2] % 2 == 0
+    num_bases = int(coefficients.shape[-2] / 2)
+    coeffs_real = coefficients[..., :num_bases, :]
+    coeffs_im = coefficients[..., num_bases:, :]
+    complex_coefficients = coeffs_real + 1j * coeffs_im
+    return jnp.fft.irfft(complex_coefficients, norm="forward", n=num_pts, axis=-2)
+
+
 ### Dimension helpers
 def flatten_batch(x: jax.Array):
     assert len(x.shape) >= 2
@@ -45,35 +66,32 @@ def create_optimizer(learning_rate: float, warmup_steps: int, decay_steps: int):
 
 def create_train_state(
     model: nn.Module,
-    rng_key: jax.Array,
+    key: jax.Array,
     input_shapes: Sequence[tuple],
     learning_rate: float,
     warmup_steps: int = 500,
     decay_steps: int = 2000,
 ) -> TrainState:
-    rng_key, params_init_rng_key, dropout_init_rng_key = jax.random.split(rng_key, 3)
+    key, params_key, dropout_key = jax.random.split(key, 3)
     init_inputs = [jnp.zeros(shape=shape) for shape in input_shapes]
     variables = model.init(
-        {"params": params_init_rng_key, "dropout": dropout_init_rng_key},
+        {"params": params_key, "dropout": dropout_key},
         *init_inputs,
         train=True,
     )
     params = variables["params"]
     batch_stats = variables["batch_stats"] if "batch_stats" in variables else {}
 
-    optimizer = create_optimizer(
-        learning_rate=learning_rate, warmup_steps=warmup_steps, decay_steps=decay_steps
-    )
+    optimizer = create_optimizer(learning_rate=learning_rate, warmup_steps=warmup_steps, decay_steps=decay_steps)
 
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
-        key=rng_key,
+        key=key,
         tx=optimizer,
         batch_stats=batch_stats,
     )
 
-    # print(parameter_overview.get_parameter_overview(params))
     return state
 
 
@@ -114,9 +132,7 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
         )
     elif type(dtype) == tuple and type(shape) == list:
         assert len(dtype) == len(shape)
-        signatures = tuple(
-            [tf.TensorSpec(shape=shape[i], dtype=dtype[i]) for i in range(len(dtype))]
-        )
+        signatures = tuple([tf.TensorSpec(shape=shape[i], dtype=dtype[i]) for i in range(len(dtype))])
         dataset = tf.data.Dataset.from_generator(generator, output_signature=signatures)
     else:
         raise ValueError("Invalid dtype or shape")
