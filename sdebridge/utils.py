@@ -12,21 +12,21 @@ from flax.training import train_state
 
 def fourier_coefficients(array, num_bases):
     """Array of shape [..., pts, dim]
-    Returns array of shape [..., :2*num_bases, dim]"""
+    Returns array of shape [..., 2, :num_bases, dim]"""
 
     complex_coefficients = jnp.fft.rfft(array, norm="forward", axis=-2)[..., :num_bases, :]
     coeffs = jnp.stack([complex_coefficients.real, complex_coefficients.imag], axis=0)
-    coeffs = coeffs.reshape(*complex_coefficients.shape[:-2], -1, complex_coefficients.shape[-1])
+    # coeffs = coeffs.reshape(*complex_coefficients.shape[:-2], -1, complex_coefficients.shape[-1])
     return coeffs
 
 
 def inverse_fourier(coefficients, num_pts):
-    """Array of shape [..., 2*num_bases, dim]
+    """Array of shape [..., 2, num_bases, dim]
     Returns array of shape [..., num_pts, dim]"""
     assert coefficients.shape[-2] % 2 == 0
     num_bases = int(coefficients.shape[-2] / 2)
-    coeffs_real = coefficients[..., :num_bases, :]
-    coeffs_im = coefficients[..., num_bases:, :]
+    coeffs_real = coefficients[..., 0, :, :]
+    coeffs_im = coefficients[..., 1, :, :]
     complex_coefficients = coeffs_real + 1j * coeffs_im
     return jnp.fft.irfft(complex_coefficients, norm="forward", n=num_pts, axis=-2)
 

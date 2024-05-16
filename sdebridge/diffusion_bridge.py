@@ -130,18 +130,31 @@ def learn_score(
         generator=generator,
         dtype=(tf.float64, tf.float64, tf.float64),
         shape=[
-            (load_size, sde.N - 1, sde.n_bases, sde.dim),
-            (load_size, sde.N - 1, sde.n_bases, sde.dim),
-            (load_size, sde.N - 1, sde.n_bases, sde.n_bases),
+            (
+                load_size,
+                sde.N - 1,
+                2,
+                sde.n_bases,
+                sde.dim,
+            ),  # todo: don't hard code the 2 here (should also work for less axes)
+            (load_size, sde.N - 1, 2, sde.n_bases, sde.dim),
+            (load_size, sde.N - 1, 2, sde.n_bases, sde.n_bases),
         ],
     )
 
     @jax.jit
     def train_step(state, batch: tuple):
         trajs, grads, covs = batch  # (B, N, n_bases, 2)
-        trajs = rearrange(trajs, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
-        grads = rearrange(grads, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
-        covs = rearrange(covs, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, n_bases)
+        b = trajs.shape[0]
+        n = trajs.shape[1]
+
+        trajs = trajs.reshape((b * n, *trajs.shape[2:]))
+        grads = grads.reshape((b * n, *grads.shape[2:]))
+        covs = covs.reshape((b * n, *covs.shape[2:]))
+
+        # trajs = rearrange(trajs, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
+        # grads = rearrange(grads, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
+        # covs = rearrange(covs, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, n_bases)
 
         def loss_fn(params) -> tuple:
             score, updates = state.apply_fn(

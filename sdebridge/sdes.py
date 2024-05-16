@@ -282,12 +282,12 @@ def fourier_gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma, n_grid, grid_r
     #     raise ValueError("(n_samples/2 + 1)  must be more than n_bases")
 
     def inverse_fourier(coefficients, num_pts):
-        """Array of shape [..., 2*num_bases, dim]
+        """Array of shape [..., 2, num_bases, dim]
         Returns array of shape [..., num_pts, dim]"""
         assert coefficients.shape[-2] % 2 == 0
         num_bases = int(coefficients.shape[-2] / 2)
-        coeffs_real = coefficients[..., :num_bases, :]
-        coeffs_im = coefficients[..., num_bases:, :]
+        coeffs_real = coefficients[..., 0, :, :]
+        coeffs_im = coefficients[..., 1, :, :]
         complex_coefficients = coeffs_real + 1j * coeffs_im
         return jnp.fft.irfft(complex_coefficients, norm="forward", n=num_pts, axis=-2)
 
@@ -309,7 +309,7 @@ def fourier_gaussian_kernel_sde(T, N, dim, n_bases, alpha, sigma, n_grid, grid_r
 
         diff = Q_eval.reshape(n_bases, n_grid**2)
         coeffs = jnp.stack([diff.real, diff.imag], axis=0)
-        coeffs = coeffs.reshape(*diff.shape[:-2], -1, diff.shape[-1])
+        # coeffs = coeffs.reshape(*diff.shape[:-2], -1, diff.shape[-1])
 
         return coeffs
 
