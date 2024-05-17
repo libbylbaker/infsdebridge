@@ -26,7 +26,7 @@ class ScoreUNet(nn.Module):
         x_init = x
         time_embedding = get_time_embedding(self.time_embedding_dim)
         t = jax.vmap(time_embedding, in_axes=0)(t)
-        x = x.reshape((x.shape[0], -1))
+        x = x.reshape((x.shape[0], -1))         # !!! Flatten happens here
         x = InputDense(self.init_embedding_dim, self.act_fn)(x)
 
         # downsample

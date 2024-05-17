@@ -31,6 +31,32 @@ def inverse_fourier(coefficients, num_pts):
     return jnp.fft.irfft(complex_coefficients, norm="forward", n=num_pts, axis=-2)
 
 
+def invert(A: jnp.ndarray) -> jnp.ndarray:
+    """ A.shape: (aux_dim, N, N) """
+    if A.shape[0] == 1:     # real matrix
+        return jnp.expand_dims(jnp.linalg.pinv(A[0], hermitian=True, rcond=None), axis=0)
+    else:                   # complex matrix but present as 2 real matrices
+        C = A[0] + 1j * A[1]
+        C_inv = jnp.linalg.pinv(C, hermitian=True, rcond=None)
+        return jnp.stack([C_inv.real, C_inv.imag], axis=0)
+    
+def mult(A: jnp.ndarray, B: jnp.ndarray, B_conj: bool=False) -> jnp.ndarray:
+    """ A.shape: (aux_dim, M, N), B.shape: (aux_dim, N, P) 
+        Returns: (aux_dim, M, P)
+    """
+    assert A.shape[0] == B.shape[0]
+    if A.shape[0] == B.shape[0] == 1:   # real matrix multiplication
+        return jnp.expand_dims(jnp.matmul(A[0], B[0]), axis=0)
+    else:
+        A = A[0] + 1j * A[1]
+        if B_conj:
+            B = B[0] - 1j * B[1]
+        else:
+            B = B[0] + 1j * B[1]
+        C = jnp.matmul(A, B)
+        return jnp.stack([C.real, C.imag], axis=0)
+
+
 ### Dimension helpers
 def flatten_batch(x: jax.Array):
     assert len(x.shape) >= 2
@@ -139,11 +165,21 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
 
+def bse(xs: jnp.ndarray, Ws: jnp.ndarray) -> jnp.ndarray:
+    """ Batched squared error,
+        xs.shape: (aux_dim, N, dim)
+        Ws.shape: (aux_dim, N, N)
 
-@jax.jit
-@jax.vmap
-def weighted_norm_square(x: jax.Array, covariance: jax.Array) -> jax.Array:
-    assert x.shape[0] == covariance.shape[0]
-    Wx = (covariance @ x).flatten()
-    xWx = jnp.dot(x.flatten(), Wx)
-    return xWx
+        Returns: scalar
+    """
+    assert xs.shape[0] == Ws.shape[0]
+    if xs.shape[0] == Ws.shape[0] == 1:     # real matrices
+        xW = jnp.matmul(xs[0].T, Ws[0])     # (dim, N)
+        xWx = jnp.matmul(xW, xs[0])         # (dim, dim)
+        return jnp.trace(xWx)           # scalar
+    elif xs.shape[0] == Ws.shape[0] == 2:   # complex matrices
+        xs = xs[0] + 1j * xs[1]
+        Ws = Ws[0] + 1j * Ws[1]
+        xW = jnp.matmul(xs.conj().T, Ws)
+        xWx = jnp.matmul(xW, xs)
+        return jnp.abs(jnp.trace(xWx))
