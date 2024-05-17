@@ -32,20 +32,21 @@ def inverse_fourier(coefficients, num_pts):
 
 
 def invert(A: jnp.ndarray) -> jnp.ndarray:
-    """ A.shape: (aux_dim, N, N) """
-    if A.shape[0] == 1:     # real matrix
+    """A.shape: (aux_dim, N, N)"""
+    if A.shape[0] == 1:  # real matrix
         return jnp.expand_dims(jnp.linalg.pinv(A[0], hermitian=True, rcond=None), axis=0)
-    else:                   # complex matrix but present as 2 real matrices
+    else:  # complex matrix but present as 2 real matrices
         C = A[0] + 1j * A[1]
         C_inv = jnp.linalg.pinv(C, hermitian=True, rcond=None)
         return jnp.stack([C_inv.real, C_inv.imag], axis=0)
-    
-def mult(A: jnp.ndarray, B: jnp.ndarray, B_conj: bool=False) -> jnp.ndarray:
-    """ A.shape: (aux_dim, M, N), B.shape: (aux_dim, N, P) 
-        Returns: (aux_dim, M, P)
+
+
+def mult(A: jnp.ndarray, B: jnp.ndarray, B_conj: bool = False) -> jnp.ndarray:
+    """A.shape: (aux_dim, M, N), B.shape: (aux_dim, N, P)
+    Returns: (aux_dim, M, P)
     """
     assert A.shape[0] == B.shape[0]
-    if A.shape[0] == B.shape[0] == 1:   # real matrix multiplication
+    if A.shape[0] == B.shape[0] == 1:  # real matrix multiplication
         return jnp.expand_dims(jnp.matmul(A[0], B[0]), axis=0)
     else:
         A = A[0] + 1j * A[1]
@@ -165,19 +166,20 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
     iterable_dataset = iter(tfds.as_numpy(dataset))
     return iterable_dataset
 
-def bse(xs: jnp.ndarray, Ws: jnp.ndarray) -> jnp.ndarray:
-    """ Batched squared error,
-        xs.shape: (aux_dim, N, dim)
-        Ws.shape: (aux_dim, N, N)
 
-        Returns: scalar
+def bse(xs: jnp.ndarray, Ws: jnp.ndarray) -> jnp.ndarray:
+    """Batched squared error,
+    xs.shape: (aux_dim, N, dim)
+    Ws.shape: (aux_dim, N, N)
+
+    Returns: scalar
     """
     assert xs.shape[0] == Ws.shape[0]
-    if xs.shape[0] == Ws.shape[0] == 1:     # real matrices
-        xW = jnp.matmul(xs[0].T, Ws[0])     # (dim, N)
-        xWx = jnp.matmul(xW, xs[0])         # (dim, dim)
-        return jnp.trace(xWx)           # scalar
-    elif xs.shape[0] == Ws.shape[0] == 2:   # complex matrices
+    if xs.shape[0] == Ws.shape[0] == 1:  # real matrices
+        xW = jnp.matmul(xs[0].T, Ws[0])  # (dim, N)
+        xWx = jnp.matmul(xW, xs[0])  # (dim, dim)
+        return jnp.trace(xWx)  # scalar
+    elif xs.shape[0] == Ws.shape[0] == 2:  # complex matrices
         xs = xs[0] + 1j * xs[1]
         Ws = Ws[0] + 1j * Ws[1]
         xW = jnp.matmul(xs.conj().T, Ws)
