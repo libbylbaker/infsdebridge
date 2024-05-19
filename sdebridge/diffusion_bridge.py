@@ -167,9 +167,7 @@ def learn_score(
                 mutable=["batch_stats"],
             )  # score.shape: (B*Nt, aux_dim*n_bases*dim)
             losses = jax.vmap(bse)(scores - grads, covs)  # (B*Nt, )
-            loss = (
-                0.5 * jnp.mean(losses, axis=0) * b
-            )  # Ignore dt because we take the mean instead of sum, by default T=1.0
+            loss = 0.5 * jnp.mean(losses, axis=0)
             return loss, updates
 
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
