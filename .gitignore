@@ -163,3 +163,4 @@ cython_debug/
 ckpts
 *.npy
 *.pdf
+.DS_Store
