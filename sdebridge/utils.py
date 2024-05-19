@@ -172,9 +172,9 @@ def bse(xs: jnp.ndarray, Ws: jnp.ndarray) -> jnp.ndarray:
     """
     assert xs.shape[0] == Ws.shape[0]
     if xs.shape[0] == Ws.shape[0] == 1:  # real matrices
-        xW = jnp.matmul(xs[0].T, Ws[0])  # (dim, n_bases)
-        xWx = jnp.matmul(xW, xs[0])  # (dim, dim)
-        return jnp.trace(xWx)  # scalar
+        Wx = (Ws[0] @ xs[0]).flatten()
+        xWx = jnp.dot(xs[0].flatten(), Wx)
+        return xWx  # scalar
     elif xs.shape[0] == Ws.shape[0] == 2:  # complex matrices
         xs = xs[0] + 1j * xs[1]
         Ws = Ws[0] + 1j * Ws[1]
