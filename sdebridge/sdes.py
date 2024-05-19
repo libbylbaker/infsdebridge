@@ -79,9 +79,9 @@ def reverse(sde: SDE, score_fun: Callable) -> SDE:
         inverted_time = sde.T - time
         rev_drift_term = sde.drift(val=val, time=inverted_time)  # (aux_dim, n_bases, dim)
 
-        _score = jnp.squeeze(score_fun(val=val, time=inverted_time))  # (aux_dim*n_bases*dim)
-        _covariance = cov(sde, val=val, time=inverted_time)  # (aux_dim, n_bases, n_bases)
-        score_term = mult(_covariance, _score)  # (aux_dim, n_bases, dim)
+        cov_ = cov(sde, val=val, time=inverted_time)  # (aux_dim, n_bases, n_bases)
+        score_ = jnp.squeeze(score_fun(val=val, time=inverted_time), axis=0)  # (aux_dim*n_bases*dim)
+        score_term = mult(cov_, score_)  # (aux_dim, n_bases, dim)
 
         # NOTE: Haven't figured out how to compute this term yet
         # div_term = cov_div(sde, val=val, time=inverted_time) # (aux_dim, n_bases, dim)

@@ -15,7 +15,7 @@ if __name__ == "__main__":
     sde_config = ConfigDict(
         {
             "init_S": initial_butterfly,
-            "n_bases": n_bases,
+            "Nt": n_bases,
             "n_grid": 64,
             "grid_range": [-1.5, 1.5],
             "alpha": 1.0,
