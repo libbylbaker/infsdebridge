@@ -1,15 +1,13 @@
 import jax.numpy as jnp
 import orbax.checkpoint
-from diffusion_bridge import DiffusionBridge
 from flax.training import orbax_utils
 from ml_collections import ConfigDict
-from sde import FourierGaussianKernelSDE
+
+from sdebridge import diffusion_bridge, sdes
 
 if __name__ == "__main__":
     initial_butterfly = jnp.load("./data/tom_pts.npy")
     target_butterfly = jnp.load("./data/honrathi_pts.npy")
-    print("initial_butterfly.shape", initial_butterfly.shape)
-    print("target_butterfly.shape", target_butterfly.shape)
 
     n_bases = 24
     n_pts = initial_butterfly.shape[0]
@@ -23,30 +21,13 @@ if __name__ == "__main__":
             "alpha": 1.0,
             "sigma": 0.1,
             "T": 1.0,
-            "N": 50,
+            "n_bases": 50,
             "dim": 2,
         }
     )
 
     sde = FourierGaussianKernelSDE(sde_config)
     bridge = DiffusionBridge(sde)
-
-    initial_diff_coeffs = jnp.zeros((n_bases, 2), dtype=jnp.complex64)
-
-    target_diff = target_butterfly - initial_butterfly
-    target_diff_coeffs = jnp.fft.fft(target_diff, n=n_pts, axis=0, norm="backward")
-    target_diff_coeffs = jnp.fft.fftshift(target_diff_coeffs, axes=0)  # shift zero freqency to center for truncation
-    print("untruncated target_diff_coeffs.shape", target_diff_coeffs.shape)
-    target_diff_coeffs = target_diff_coeffs[
-        (n_pts - n_bases) // 2 : (n_pts + n_bases) // 2, :
-    ]  # truncate low frequencies
-    print("initial_diff_coeffs.shape", initial_diff_coeffs.shape)
-    print("target_diff_coeffs.shape", target_diff_coeffs.shape)
-
-    initial_diff_flatten = jnp.concatenate([initial_diff_coeffs[:, 0], initial_diff_coeffs[:, 1]], axis=0)
-    target_diff_flatten = jnp.concatenate([target_diff_coeffs[:, 0], target_diff_coeffs[:, 1]], axis=0)
-    print("initial_diff_flatten.shape", initial_diff_flatten.shape)
-    print("target_diff_flatten.shape", target_diff_flatten.shape)
 
     setup_params = {
         "network": {

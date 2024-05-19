@@ -23,10 +23,10 @@ def trajectory_generator(
     """
     Get the trajectory generator that generates the batched trajectories
     for the forward SDE.
-    x0.shape: (1, N, dim) for landmarks,
-              (2, N, dim) for Fourier coefficients
+    x0.shape: (1, n_bases, dim) for landmarks,
+              (2, n_bases, dim) for Fourier coefficients
     """
-    initial_vals = jnp.tile(x0, reps=(batch_size, 1, 1, 1))  # (B, 1 or 2, N, dim)
+    initial_vals = jnp.tile(x0, reps=(batch_size, 1, 1, 1))  # (B, 1 or 2, n_bases, dim)
 
     def generator():
         subkey = key
@@ -34,7 +34,7 @@ def trajectory_generator(
             _, subkey = jax.random.split(subkey)
             trajs, grads, covs = euler_and_grad_and_cov(
                 sde, initial_vals, key
-            )  # trajs, grads with shape (B, 1 or 2, N, dim), covs with shape (B, N, 1 or 2, n_bases, n_bases)
+            )  # trajs, grads with shape (B, 1 or 2, n_bases, dim), covs with shape (B, n_bases, 1 or 2, n_bases, n_bases)
             yield trajs, grads, covs,
 
     return generator
@@ -142,21 +142,21 @@ def learn_score(
         # dtype=(tf.float64, tf.float64, tf.float64),
         dtype=(tf.float32, tf.float32, tf.float32),  # !!! change to float32 for better performance
         shape=[
-            (load_size, sde.Nt - 1, aux_dim, sde.N, sde.dim),  # trajs
-            (load_size, sde.Nt - 1, aux_dim, sde.N, sde.dim),  # grads
-            (load_size, sde.Nt - 1, aux_dim, sde.N, sde.N),  # covs
+            (load_size, sde.Nt - 1, aux_dim, sde.n_bases, sde.dim),  # trajs
+            (load_size, sde.Nt - 1, aux_dim, sde.n_bases, sde.dim),  # grads
+            (load_size, sde.Nt - 1, aux_dim, sde.n_bases, sde.n_bases),  # covs
         ],
     )
 
     @jax.jit
     def train_step(state, batch: tuple):
-        trajs, grads, covs = batch  # (B, Nt, aux_dim, N, dim) and (B, Nt, aux_dim, Nb, Nb)
+        trajs, grads, covs = batch  # (B, Nt, aux_dim, n_bases, dim) and (B, Nt, aux_dim, bm_size, bm_size)
         b = trajs.shape[0]
         n = trajs.shape[1]
 
-        trajs = trajs.reshape((b * n, *trajs.shape[2:]))  # (B*Nt, aux_dim, N, dim)
-        grads = grads.reshape((b * n, *grads.shape[2:]))  # (B*Nt, aux_dim, N, dim)
-        covs = covs.reshape((b * n, *covs.shape[2:]))  # (B*Nt, aux_dim, N, N)
+        trajs = trajs.reshape((b * n, *trajs.shape[2:]))  # (B*Nt, aux_dim, n_bases, dim)
+        grads = grads.reshape((b * n, *grads.shape[2:]))  # (B*Nt, aux_dim, n_bases, dim)
+        covs = covs.reshape((b * n, *covs.shape[2:]))  # (B*Nt, aux_dim, n_bases, n_bases)
 
         def loss_fn(params) -> tuple:
             scores, updates = state.apply_fn(
@@ -165,7 +165,7 @@ def learn_score(
                 t=ts,
                 train=True,
                 mutable=["batch_stats"],
-            )  # score.shape: (B*Nt, aux_dim*N*dim)
+            )  # score.shape: (B*Nt, aux_dim*n_bases*dim)
             losses = jax.vmap(bse)(scores - grads, covs)  # (B*Nt, )
             loss = (
                 0.5 * jnp.mean(losses, axis=0) * b
@@ -185,7 +185,7 @@ def learn_score(
         model=score_net,
         key=network_key,
         input_shapes=[
-            (batch_size, aux_dim * sde.N * sde.dim),
+            (batch_size, aux_dim * sde.n_bases * sde.dim),
             (batch_size, 1),
         ],
         learning_rate=learning_rate,
@@ -229,7 +229,7 @@ def euler_and_grad_and_cov(
 ) -> tuple:
     """Euler-Maruyama solver for SDEs
 
-    initial_vals: (B, aux_dim, N, 2)
+    initial_vals: (B, aux_dim, n_bases, 2)
     """
     b, aux_d, n = initial_vals.shape[:-1]
     state = namedtuple("state", ["x", "grads", "covs", "key"])
@@ -245,18 +245,18 @@ def euler_and_grad_and_cov(
         time = jnp.expand_dims(time, axis=-1)
         time = jnp.tile(time, (b, 1))
         step_key, _ = jax.random.split(s.key)
-        drift_ = jax.vmap(sde.drift, in_axes=(0, 0))(s.x, time)  # (B, aux_dim, N, dim)
+        drift_ = jax.vmap(sde.drift, in_axes=(0, 0))(s.x, time)  # (B, aux_dim, n_bases, dim)
 
-        eps_ = jax.random.normal(step_key, shape=(b, aux_d, *sde.bm_shape))  # (B, aux_dim, Nb, dim)
-        diffusion_ = jax.vmap(sde.diffusion, in_axes=(0, None))(s.x, time)  # (B, aux_dim, N, Nb)
-        diffusion_step = jnp.sqrt(sde.dt) * jax.vmap(mult)(diffusion_, eps_)  # (B, aux_dim, N, dim)
+        eps_ = jax.random.normal(step_key, shape=(b, aux_d, *sde.bm_shape))  # (B, aux_dim, bm_size, dim)
+        diffusion_ = jax.vmap(sde.diffusion, in_axes=(0, None))(s.x, time)  # (B, aux_dim, n_bases, bm_size)
+        diffusion_step = jnp.sqrt(sde.dt) * jax.vmap(mult)(diffusion_, eps_)  # (B, aux_dim, n_bases, dim)
 
-        cov_ = jax.vmap(sdes.cov, in_axes=(None, 0, None))(sde, s.x, time)  # (B, aux_dim, N, N)
-        inv_cov = jax.vmap(invert)(cov_)  # (B, aux_dim, N, N)
+        cov_ = jax.vmap(sdes.cov, in_axes=(None, 0, None))(sde, s.x, time)  # (B, aux_dim, n_bases, n_bases)
+        inv_cov = jax.vmap(invert)(cov_)  # (B, aux_dim, n_bases, n_bases)
 
-        grads = -1 / sde.dt * jax.vmap(mult)(inv_cov, diffusion_step)  # (B, aux_dim, N, dim)
+        grads = -1 / sde.dt * jax.vmap(mult)(inv_cov, diffusion_step)  # (B, aux_dim, n_bases, dim)
 
-        xnew = s.x + drift_ * sde.dt + diffusion_step  # (B, aux_dim, N, dim)
+        xnew = s.x + drift_ * sde.dt + diffusion_step  # (B, aux_dim, n_bases, dim)
         new_state = state(
             x=xnew,
             grads=grads,
@@ -276,8 +276,8 @@ def euler_and_grad_and_cov(
         xs=(sde.ts[:-1]),
         length=sde.Nt - 1,
     )
-    trajectories = trajectories.swapaxes(0, 1)  # (B, Nt, aux_dim, N, dim)
-    gradients = gradients.swapaxes(0, 1)  # (B, Nt, aux_dim, N, dim)
-    covariances = covariances.swapaxes(0, 1)  # (B, Nt, aux_dim, N, N)
+    trajectories = trajectories.swapaxes(0, 1)  # (B, Nt, aux_dim, n_bases, dim)
+    gradients = gradients.swapaxes(0, 1)  # (B, Nt, aux_dim, n_bases, dim)
+    covariances = covariances.swapaxes(0, 1)  # (B, Nt, aux_dim, n_bases, n_bases)
 
     return trajectories, gradients, covariances

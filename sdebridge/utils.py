@@ -29,7 +29,7 @@ def inverse_fourier(coefficients, num_pts):
 
 
 def invert(A: jnp.ndarray) -> jnp.ndarray:
-    """A.shape: (aux_dim, N, N)"""
+    """A.shape: (aux_dim, n_bases, n_bases)"""
     if A.shape[0] == 1:  # real matrix
         return jnp.expand_dims(jnp.linalg.pinv(A[0], hermitian=True, rcond=None), axis=0)
     else:  # complex matrix but present as 2 real matrices
@@ -39,7 +39,7 @@ def invert(A: jnp.ndarray) -> jnp.ndarray:
 
 
 def mult(A: jnp.ndarray, B: jnp.ndarray, B_conj: bool = False) -> jnp.ndarray:
-    """A.shape: (aux_dim, M, N), B.shape: (aux_dim, N, P)
+    """A.shape: (aux_dim, M, n_bases), B.shape: (aux_dim, n_bases, P)
     Returns: (aux_dim, M, P)
     """
     assert A.shape[0] == B.shape[0]
@@ -165,14 +165,14 @@ def get_iterable_dataset(generator: callable, dtype: any, shape: any):
 
 def bse(xs: jnp.ndarray, Ws: jnp.ndarray) -> jnp.ndarray:
     """Batched squared error,
-    xs.shape: (aux_dim, N, dim)
-    Ws.shape: (aux_dim, N, N)
+    xs.shape: (aux_dim, n_bases, dim)
+    Ws.shape: (aux_dim, n_bases, n_bases)
 
     Returns: scalar
     """
     assert xs.shape[0] == Ws.shape[0]
     if xs.shape[0] == Ws.shape[0] == 1:  # real matrices
-        xW = jnp.matmul(xs[0].T, Ws[0])  # (dim, N)
+        xW = jnp.matmul(xs[0].T, Ws[0])  # (dim, n_bases)
         xWx = jnp.matmul(xW, xs[0])  # (dim, dim)
         return jnp.trace(xWx)  # scalar
     elif xs.shape[0] == Ws.shape[0] == 2:  # complex matrices
