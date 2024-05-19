@@ -5,7 +5,8 @@ from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
-from sdebridge.utils import mult, invert
+
+from sdebridge.utils import invert, mult
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -63,14 +64,6 @@ def simulate_traj(sde: SDE, initial_val: jax.Array, num_batches: int, key: jax.A
     return trajectories
 
 
-# @partial(jax.jit, static_argnums=(0, 2))
-# def simulate_traj_grad_cov(sde: SDE, initial_val, num_batches, key):
-#     keys = jax.random.split(key, num_batches)
-#     egc = functools.partial(euler_maruyama_grad_cov, x0=initial_val, sde=sde)
-#     traj, grad, cov = jax.vmap(egc)(keys)
-#     return traj, grad, cov
-
-
 def reverse(sde: SDE, score_fun: Callable) -> SDE:
     """Drift and diffusion for backward bridge process (Z*(t)):
         dZ*(t) = {-f(T-t, Z*(t)) + Sigma(T-t, Z*(t)) s(T-t, Z*(t)) + div Sigma(T-t, Z*(t))} dt + g(T-t, Z*(t)) dW(t)
@@ -84,17 +77,16 @@ def reverse(sde: SDE, score_fun: Callable) -> SDE:
 
     def drift(val: jax.Array, time: jax.Array) -> jax.Array:
         inverted_time = sde.T - time
-        rev_drift_term = sde.drift(val=val, time=inverted_time)         # (aux_dim, N, dim)
+        rev_drift_term = sde.drift(val=val, time=inverted_time)  # (aux_dim, N, dim)
 
-        _score = jnp.squeeze(score_fun(val=val, time=inverted_time))    # (aux_dim*N*dim)                        
-        _covariance = cov(sde, val=val, time=inverted_time)             # (aux_dim, N, N)
-        score_term = mult(_covariance, _score)    # (aux_dim, N, dim)
+        _score = jnp.squeeze(score_fun(val=val, time=inverted_time))  # (aux_dim*N*dim)
+        _covariance = cov(sde, val=val, time=inverted_time)  # (aux_dim, N, N)
+        score_term = mult(_covariance, _score)  # (aux_dim, N, dim)
 
         # NOTE: Haven't figured out how to compute this term yet
         # div_term = cov_div(sde, val=val, time=inverted_time) # (aux_dim, N, dim)
         # return -rev_drift_term + score_term + div_term
         return -rev_drift_term + score_term
-
 
     def diffusion(val: jax.Array, time: jax.Array) -> jax.Array:
         inverted_time = sde.T - time
@@ -126,7 +118,7 @@ def bridge(sde: SDE, score_fun: Callable) -> SDE:
     def drift(val: jax.Array, time: jax.Array) -> jax.Array:
         orig_drift_term = sde.drift(val=val, time=time)
 
-        _score = jnp.squeeze(score_fun(val=val, time=time))     # (aux_dim*N*dim)
+        _score = jnp.squeeze(score_fun(val=val, time=time))  # (aux_dim*N*dim)
         _covariance = sde.cov(val=val, time=time)
         score_term = jnp.dot(_covariance, _score)
         return orig_drift_term + score_term
@@ -154,14 +146,15 @@ def euler_maruyama(key, x0, ts, drift, diffusion, bm_shape) -> jnp.ndarray:
 
     Return xs: (Nt+1, aux_dim, N, dim)
     """
+
     def step_fun(key_and_x_and_t, dt):
         k, x, t = key_and_x_and_t
         k, subkey = jax.random.split(k, num=2)
-        eps = jax.random.normal(subkey, shape=(x.shape[0], ) + bm_shape)                 # (aux_dim, Nb, dim)
-        diffusion_ = diffusion(x, t)                                                    # (aux_dim, N, Nb)
+        eps = jax.random.normal(subkey, shape=(x.shape[0],) + bm_shape)  # (aux_dim, Nb, dim)
+        diffusion_ = diffusion(x, t)  # (aux_dim, N, Nb)
         print(f"{diffusion_.shape=}")
         print(f"{eps.shape=}")
-        xnew = x + dt * drift(x, t) + jnp.sqrt(dt) * mult(diffusion_, eps)   # (aux_dim, N, dim)
+        xnew = x + dt * drift(x, t) + jnp.sqrt(dt) * mult(diffusion_, eps)  # (aux_dim, N, dim)
         tnew = t + dt
 
         return (k, xnew, tnew), xnew
@@ -172,43 +165,13 @@ def euler_maruyama(key, x0, ts, drift, diffusion, bm_shape) -> jnp.ndarray:
     return xs
 
 
-# @partial(jax.jit, static_argnums=2)
-# def euler_maruyama_grad_cov(key, x0, sde) -> tuple:
-#     """
-#     Euler-Maruyama solver with recording the covariance and gradient,
-#     used for training
-#     x0.shape: (aux_dim, N, dim)
-
-#     Return xs:      (Nt, aux_dim, N, dim)
-#            grads:   (Nt, aux_dim, N, dim)
-#            covs:    (Nt, aux_dim, N, N)
-#     """
-#     def step_fun(key_x_t, dt):
-#         k, x, t = key_x_t
-#         k, subkey = jax.random.split(k, num=2)
-#         eps = jax.random.normal(subkey, shape=(x.shape[0], ) + sde.bm_shape)                     # (aux, Nb, dim)
-#         diffusion = mult(sde.diffusion(x, t), eps)         # (aux_dim, N, dim)
-
-#         xnew = x + dt * sde.drift(x, t) + jnp.sqrt(dt) * diffusion              # (aux_dim, N, dim)
-#         tnew = t + dt
-#         covnew = cov(sde, x, t)                                                 # (aux_dim, N, N)
-#         inv_covnew = invert(covnew)                                             # (aux_dim, N, N)
-#         gradnew = -1 / dt * mult(inv_covnew, diffusion)      # (aux_dim, N, dim)
-
-#         return (k, xnew, tnew), (xnew, gradnew, covnew)
-
-#     init = (key, x0, sde.ts[0])
-#     _, (xs, grads, covs) = jax.lax.scan(step_fun, xs=jnp.diff(sde.ts), init=init)
-#     return xs, grads, covs
-
-
 def brownian_sde(T, Nt, dim, N, sigma) -> SDE:
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        return jnp.zeros_like(val)                              # (aux_dim, N, dim)
+        return jnp.zeros_like(val)  # (aux_dim, N, dim)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         a = val.shape[0]
-        return jnp.tile(jnp.expand_dims(sigma * jnp.eye(N), axis=0), reps=(a, 1, 1))      # (aux_dim, N, N)
+        return jnp.tile(jnp.expand_dims(sigma * jnp.eye(N), axis=0), reps=(a, 1, 1))  # (aux_dim, N, N)
 
     return SDE(
         T=T,
@@ -224,7 +187,7 @@ def brownian_sde(T, Nt, dim, N, sigma) -> SDE:
 
 def trace_brownian_sde(T, Nt, dim, N, alpha, power) -> SDE:
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        return jnp.zeros_like(val)                                  # (aux_dim, N, dim)
+        return jnp.zeros_like(val)  # (aux_dim, N, dim)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         k = jnp.arange(1, N + 1)
@@ -245,12 +208,12 @@ def trace_brownian_sde(T, Nt, dim, N, alpha, power) -> SDE:
 
 def gaussian_kernel_sde(T, Nt, dim, N, alpha, sigma) -> SDE:
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        return jnp.zeros_like(val)                  # (aux_dim, N, dim)
+        return jnp.zeros_like(val)  # (aux_dim, N, dim)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         Q_half = kernel_gaussian_Q_half(landmarks=val.squeeze(), alpha=alpha, sigma=sigma)
         a = val.shape[0]
-        return jnp.tile(jnp.expand_dims(Q_half, axis=0), reps=(a, 1, 1))      # (aux_dim, N, N)
+        return jnp.tile(jnp.expand_dims(Q_half, axis=0), reps=(a, 1, 1))  # (aux_dim, N, N)
 
     return SDE(
         T=T,
@@ -275,13 +238,12 @@ def gaussian_independent_kernel_sde(
     grid_range: tuple,
 ) -> SDE:
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        return jnp.zeros_like(val)              # (aux_dim, N, dim)
+        return jnp.zeros_like(val)  # (aux_dim, N, dim)
 
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         kernel = kernel_gaussian_independent(alpha, sigma, grid_range=grid_range, Ngrid=Ngrid)
-        val = val.squeeze().reshape(-1, dim)    # (aux_dim, N, dim)
-        Q_half = kernel(val)                    # (N, Ngrid**2)
-        # Q_half = jnp.kron(Q_half, jnp.eye(2))
+        val = val.squeeze().reshape(-1, dim)  # (aux_dim, N, dim)
+        Q_half = kernel(val)  # (N, Ngrid**2)
         return jnp.expand_dims(Q_half, axis=0)  # (aux_dim, N, Nb)
 
     return SDE(
@@ -317,23 +279,21 @@ def fourier_gaussian_kernel_sde(T, Nt, dim, N, alpha, sigma, Ngrid, grid_range, 
         """
         X_coeffs.shape: (aux_dim=2, N, dim)
         """
-        X_pts = inverse_fourier(X_coeffs, Npt)      # (Npt, dim)
-        Q_half = gaussian_grid_kernel(X_pts)        # (Npt, Ngrid**2)
-        return Q_half.reshape(Npt, Ngrid, Ngrid)    # (Npt, Ngrid, Ngrid)
+        X_pts = inverse_fourier(X_coeffs, Npt)  # (Npt, dim)
+        Q_half = gaussian_grid_kernel(X_pts)  # (Npt, Ngrid**2)
+        return Q_half.reshape(Npt, Ngrid, Ngrid)  # (Npt, Ngrid, Ngrid)
 
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         return jnp.zeros_like(val)
 
     @jax.jit
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        Q_eval = evaluate_Q(val)                                                # (Npt, Ngrid, Ngrid)
-        # Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward", n=2 * (N - 1))    # (N, Ngrid, Ngrid)
-        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward")[:N, ...]             # (N, Ngrid, Ngrid)
-        Q_eval = jnp.fft.ifft2(Q_eval, axes=(1, 2), norm="backward")            # (N, Ngrid, Ngrid)
+        Q_eval = evaluate_Q(val)  # (Npt, Ngrid, Ngrid)
+        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward")[:N, ...]  # (N, Ngrid, Ngrid)
+        Q_eval = jnp.fft.ifft2(Q_eval, axes=(1, 2), norm="backward")  # (N, Ngrid, Ngrid)
 
         diff = Q_eval.reshape(N, Ngrid**2)
-        coeffs = jnp.stack([diff.real, diff.imag], axis=0)                      # (2, N, Ngrid**2)
-        # coeffs = coeffs.reshape(*diff.shape[:-2], -1, diff.shape[-1])
+        coeffs = jnp.stack([diff.real, diff.imag], axis=0)  # (2, N, Ngrid**2)
 
         return coeffs
 
@@ -358,7 +318,7 @@ def kernel_gaussian_2d(alpha: float, sigma: float) -> callable:
 def kernel_gaussian_independent(alpha, sigma, grid_range, Ngrid, dim=2):
     grid = jnp.linspace(*grid_range, Ngrid)
     grid = jnp.stack(jnp.meshgrid(grid, grid, indexing="xy"), axis=-1)
-    grid_ = grid.reshape(-1, dim)       # (Ngrid**2, dim)
+    grid_ = grid.reshape(-1, dim)  # (Ngrid**2, dim)
 
     gauss_kernel = kernel_gaussian_2d(alpha, sigma)
     batch_over_grid = jax.vmap(gauss_kernel, in_axes=(None, 0))
@@ -366,7 +326,7 @@ def kernel_gaussian_independent(alpha, sigma, grid_range, Ngrid, dim=2):
 
     def kernel(val):
         Q_half = batch_over_vals(val, grid_)
-        Q_half = Q_half.reshape(-1, Ngrid**2)   # (Npt, Ngrid**2)
+        Q_half = Q_half.reshape(-1, Ngrid**2)  # (Npt, Ngrid**2)
         return Q_half
 
     return kernel

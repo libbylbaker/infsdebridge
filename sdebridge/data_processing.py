@@ -44,12 +44,8 @@ def _interpolate(path, remove_pts):
     ordered = np.asarray(order_points(get_points(path)), dtype=float)[:remove_pts]
     ordered[:, 0] = _scale(ordered[:, 0])
     ordered[:, 1] = _scale(ordered[:, 1])
-    x1 = np.interp(
-        np.arange(0.0, len(ordered), 0.05), np.arange(len(ordered)), ordered[:, 0]
-    )
-    x2 = np.interp(
-        np.arange(0.0, len(ordered), 0.05), np.arange(len(ordered)), ordered[:, 1]
-    )
+    x1 = np.interp(np.arange(0.0, len(ordered), 0.05), np.arange(len(ordered)), ordered[:, 0])
+    x2 = np.interp(np.arange(0.0, len(ordered), 0.05), np.arange(len(ordered)), ordered[:, 1])
     return x1, x2
 
 
@@ -96,7 +92,6 @@ def butterfly_tom_pts():
 
 
 def butterfly_jerry_pts():
-    # !!! This image doesn't work at this moment because of the error of opencv
     path_b2 = "../data/inverted_butterfly_jerry.png"
     remove_pts_b2 = -73
     return _interpolate(path_b2, remove_pts_b2)

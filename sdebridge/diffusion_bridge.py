@@ -158,10 +158,6 @@ def learn_score(
         grads = grads.reshape((b * n, *grads.shape[2:]))  # (B*Nt, aux_dim, N, dim)
         covs = covs.reshape((b * n, *covs.shape[2:]))  # (B*Nt, aux_dim, N, N)
 
-        # trajs = rearrange(trajs, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
-        # grads = rearrange(grads, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, 2)
-        # covs = rearrange(covs, "b n d1 d2 -> (b n) d1 d2")  # (B*N, n_bases, n_bases)
-
         def loss_fn(params) -> tuple:
             scores, updates = state.apply_fn(
                 {"params": params, "batch_stats": state.batch_stats},
@@ -170,7 +166,6 @@ def learn_score(
                 train=True,
                 mutable=["batch_stats"],
             )  # score.shape: (B*Nt, aux_dim*N*dim)
-            # scores = scores.reshape(*grads.shape)                           # (B*Nt, aux_dim, N, dim)
             losses = jax.vmap(bse)(scores - grads, covs)  # (B*Nt, )
             loss = (
                 0.5 * jnp.mean(losses, axis=0) * b
@@ -254,15 +249,9 @@ def euler_and_grad_and_cov(
 
         eps_ = jax.random.normal(step_key, shape=(b, aux_d, *sde.bm_shape))  # (B, aux_dim, Nb, dim)
         diffusion_ = jax.vmap(sde.diffusion, in_axes=(0, None))(s.x, time)  # (B, aux_dim, N, Nb)
-        # print(f"{eps_.shape=}, {diffusion_.shape=}")
         diffusion_step = jnp.sqrt(sde.dt) * jax.vmap(mult)(diffusion_, eps_)  # (B, aux_dim, N, dim)
 
         cov_ = jax.vmap(sdes.cov, in_axes=(None, 0, None))(sde, s.x, time)  # (B, aux_dim, N, N)
-        # inv_cov = jax.vmap(
-        #     jax.vmap(
-        #         partial(jnp.linalg.pinv, hermitian=True, rcond=None)
-        #     )
-        # )(cov_)  # (B, aux_dim, N, N)
         inv_cov = jax.vmap(invert)(cov_)  # (B, aux_dim, N, N)
 
         grads = -1 / sde.dt * jax.vmap(mult)(inv_cov, diffusion_step)  # (B, aux_dim, N, dim)

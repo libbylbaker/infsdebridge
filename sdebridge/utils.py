@@ -6,7 +6,6 @@ import optax
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from flax import linen as nn
-from flax import struct
 from flax.training import train_state
 
 
@@ -16,7 +15,6 @@ def fourier_coefficients(array, num_bases):
 
     complex_coefficients = jnp.fft.rfft(array, norm="forward", axis=-2)[..., :num_bases, :]
     coeffs = jnp.stack([complex_coefficients.real, complex_coefficients.imag], axis=0)
-    # coeffs = coeffs.reshape(*complex_coefficients.shape[:-2], -1, complex_coefficients.shape[-1])
     return coeffs
 
 
@@ -24,7 +22,6 @@ def inverse_fourier(coefficients, num_pts):
     """Array of shape [..., 2, num_bases, dim]
     Returns array of shape [..., num_pts, dim]"""
     assert coefficients.shape[-2] % 2 == 0
-    num_bases = int(coefficients.shape[-2] / 2)
     coeffs_real = coefficients[..., 0, :, :]
     coeffs_im = coefficients[..., 1, :, :]
     complex_coefficients = coeffs_real + 1j * coeffs_im
@@ -85,7 +82,6 @@ def create_optimizer(learning_rate: float, warmup_steps: int, decay_steps: int):
         end_value=0.01 * learning_rate,
     )
     optimizer = optax.chain(
-        # optax.clip_by_global_norm(1.0),
         optax.adam(lr_scheduler),
     )
     return optimizer
