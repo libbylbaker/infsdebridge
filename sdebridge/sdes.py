@@ -152,8 +152,6 @@ def euler_maruyama(key, x0, ts, drift, diffusion, bm_shape) -> jnp.ndarray:
         k, subkey = jax.random.split(k, num=2)
         eps = jax.random.normal(subkey, shape=(x.shape[0],) + bm_shape)  # (aux_dim, bm_size, dim)
         diffusion_ = diffusion(x, t)  # (aux_dim, n_bases, bm_size)
-        print(f"{diffusion_.shape=}")
-        print(f"{eps.shape=}")
         xnew = x + dt * drift(x, t) + jnp.sqrt(dt) * mult(diffusion_, eps)  # (aux_dim, n_bases, dim)
         tnew = t + dt
 
