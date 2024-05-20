@@ -6,18 +6,16 @@ from tueplots.constants.color import palettes
 from .setup import *
 
 
-def set_style(column="half", nrows=1, ncols=1):
+def set_style(nrows=1, ncols=1):
     plt.rcParams.update({"figure.dpi": 150})
-    plt.rcParams.update(
-        bundles.icml2024(column=column, nrows=nrows, ncols=ncols, usetex=True)
-    )
+    plt.rcParams.update(bundles.neurips2024(nrows=nrows, ncols=ncols, usetex=True))
     plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
     plt.rcParams.update(axes.lines())
     plt.rcParams.update(axes.spines(top=False, right=False))
 
 
 def set_style2(nrows, ncols):
-    plt.rcParams.update(figsizes.icml2024_full(nrows=nrows, ncols=ncols))
+    plt.rcParams.update(figsizes.neurips2024(nrows=nrows, ncols=ncols))
     plt.rcParams.update(cycler.cycler(color=palettes.paultol_muted))
 
 

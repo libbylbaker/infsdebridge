@@ -245,7 +245,7 @@ def gaussian_independent_kernel_sde(
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         kernel = kernel_gaussian_independent(alpha, sigma, grid_range=grid_range, Ngrid=Ngrid)
         val = val.squeeze().reshape(-1, dim)  # (aux_dim, n_bases, dim)
-        Q_half = kernel(val)  # (n_bases, Ngrid**2)
+        Q_half = kernel(val)  # (n_bases, n_grid**2)
         return jnp.expand_dims(Q_half, axis=0)  # (aux_dim, n_bases, bm_size)
 
     return SDE(
@@ -260,14 +260,14 @@ def gaussian_independent_kernel_sde(
     )
 
 
-def fourier_gaussian_kernel_sde(T, Nt, dim, N, alpha, sigma, Ngrid, grid_range, Npt) -> SDE:
+def fourier_gaussian_kernel_sde(T, Nt, dim, n_bases, alpha, sigma, n_grid, grid_range, n_pts) -> SDE:
     # if n_samples / 2 + 1 < n_bases:
     #     raise ValueError("(n_samples/2 + 1)  must be more than n_bases")
 
     def inverse_fourier(coefficients, Npt):
         """
         coefficients.shape: [..., 2, n_bases, dim]
-        Returns array of shape [..., Npt, dim]
+        Returns array of shape [..., n_pts, dim]
         """
         assert coefficients.shape[-2] % 2 == 0
         coeffs_real = coefficients[..., 0, :, :]
@@ -275,31 +275,31 @@ def fourier_gaussian_kernel_sde(T, Nt, dim, N, alpha, sigma, Ngrid, grid_range, 
         complex_coefficients = coeffs_real + 1j * coeffs_imag
         return jnp.fft.irfft(complex_coefficients, norm="forward", n=Npt, axis=-2)
 
-    gaussian_grid_kernel = kernel_gaussian_independent(alpha, sigma, grid_range, Ngrid, dim)
+    gaussian_grid_kernel = kernel_gaussian_independent(alpha, sigma, grid_range, n_grid, dim)
 
     def evaluate_Q(X_coeffs: jnp.ndarray) -> jnp.ndarray:
         """
         X_coeffs.shape: (aux_dim=2, n_bases, dim)
         """
-        X_pts = inverse_fourier(X_coeffs, Npt)  # (Npt, dim)
-        Q_half = gaussian_grid_kernel(X_pts)  # (Npt, Ngrid**2)
-        return Q_half.reshape(Npt, Ngrid, Ngrid)  # (Npt, Ngrid, Ngrid)
+        X_pts = inverse_fourier(X_coeffs, n_pts)  # (n_pts, dim)
+        Q_half = gaussian_grid_kernel(X_pts)  # (n_pts, n_grid**2)
+        return Q_half.reshape(n_pts, n_grid, n_grid)  # (n_pts, n_grid, n_grid)
 
     def drift(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
         return jnp.zeros_like(val)
 
     @jax.jit
     def diffusion(val: jnp.ndarray, time: jnp.ndarray) -> jnp.ndarray:
-        Q_eval = evaluate_Q(val)  # (Npt, Ngrid, Ngrid)
-        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward")[:N, ...]  # (n_bases, Ngrid, Ngrid)
-        Q_eval = jnp.fft.ifft2(Q_eval, axes=(1, 2), norm="backward")  # (n_bases, Ngrid, Ngrid)
+        Q_eval = evaluate_Q(val)  # (n_pts, n_grid, n_grid)
+        Q_eval = jnp.fft.rfft(Q_eval, axis=0, norm="forward")[:n_bases, ...]  # (n_bases, n_grid, n_grid)
+        Q_eval = jnp.fft.ifft2(Q_eval, axes=(1, 2), norm="backward")  # (n_bases, n_grid, n_grid)
 
-        diff = Q_eval.reshape(N, Ngrid**2)
-        coeffs = jnp.stack([diff.real, diff.imag], axis=0)  # (2, n_bases, Ngrid**2)
+        diff = Q_eval.reshape(n_bases, n_grid**2)
+        coeffs = jnp.stack([diff.real, diff.imag], axis=0)  # (2, n_bases, n_grid**2)
 
         return coeffs
 
-    return SDE(T, Nt, dim, N, drift, diffusion, bm_size=Ngrid**2, params=None)
+    return SDE(T, Nt, dim, n_bases, drift, diffusion, bm_size=n_grid**2, params=None)
 
 
 def kernel_gaussian_Q_half(landmarks: jnp.ndarray, alpha: float, sigma: float) -> jax.Array:
@@ -320,7 +320,7 @@ def kernel_gaussian_2d(alpha: float, sigma: float) -> callable:
 def kernel_gaussian_independent(alpha, sigma, grid_range, Ngrid, dim=2):
     grid = jnp.linspace(*grid_range, Ngrid)
     grid = jnp.stack(jnp.meshgrid(grid, grid, indexing="xy"), axis=-1)
-    grid_ = grid.reshape(-1, dim)  # (Ngrid**2, dim)
+    grid_ = grid.reshape(-1, dim)  # (n_grid**2, dim)
 
     gauss_kernel = kernel_gaussian_2d(alpha, sigma)
     batch_over_grid = jax.vmap(gauss_kernel, in_axes=(None, 0))
@@ -328,7 +328,7 @@ def kernel_gaussian_independent(alpha, sigma, grid_range, Ngrid, dim=2):
 
     def kernel(val):
         Q_half = batch_over_vals(val, grid_)
-        Q_half = Q_half.reshape(-1, Ngrid**2)  # (Npt, Ngrid**2)
+        Q_half = Q_half.reshape(-1, Ngrid**2)  # (n_pts, n_grid**2)
         return Q_half
 
     return kernel

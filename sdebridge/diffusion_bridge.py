@@ -18,7 +18,7 @@ def trajectory_generator(
     sde: sdes.SDE,
     key: jax.Array,
     batch_size: int,
-    x0: jnp.ndarray,
+    x0_sampler: Callable,
 ) -> Callable:
     """
     Get the trajectory generator that generates the batched trajectories
@@ -26,14 +26,16 @@ def trajectory_generator(
     x0.shape: (1, n_bases, dim) for landmarks,
               (2, n_bases, dim) for Fourier coefficients
     """
-    initial_vals = jnp.tile(x0, reps=(batch_size, 1, 1, 1))  # (B, 1 or 2, n_bases, dim)
+
+    # initial_vals = jnp.tile(x0, reps=(batch_size, 1, 1, 1))  # (B, 1 or 2, n_bases, dim)
 
     def generator():
         subkey = key
         while True:
-            _, subkey = jax.random.split(subkey)
+            val_key, subkey = jax.random.split(subkey)
+            initial_vals = x0_sampler(val_key, batch_size)
             trajs, grads, covs = euler_and_grad_and_cov(
-                sde, initial_vals, key
+                sde, initial_vals, subkey
             )  # trajs, grads with shape (B, 1 or 2, n_bases, dim), covs with shape (B, n_bases, 1 or 2, n_bases, n_bases)
             yield trajs, grads, covs,
 
@@ -42,8 +44,9 @@ def trajectory_generator(
 
 def learn_p_score(
     sde: sdes.SDE,
-    initial_val: jax.Array,
+    x0_sampler: Callable,
     key: jax.Array,
+    aux_dim: int,
     *,
     batch_size: int,
     load_size: int,
@@ -58,10 +61,10 @@ def learn_p_score(
         "b n -> (b n) 1",
         b=batch_size,
     )
-    gen = trajectory_generator(sde, key, load_size, initial_val)
+    gen = trajectory_generator(sde, key, load_size, x0_sampler)
     return learn_score(
         sde,
-        initial_val,
+        aux_dim,
         gen,
         key,
         ts,
@@ -77,9 +80,10 @@ def learn_p_score(
 
 def learn_p_star_score(
     forward_sde: sdes.SDE,
-    initial_val: jax.Array,
+    x0_sampler: Callable,
     key: jax.Array,
     score_p: Callable,
+    aux_dim: int,
     *,
     batch_size: int,
     load_size: int,
@@ -96,11 +100,11 @@ def learn_p_star_score(
         b=batch_size,
     )
     reverse_sde = sdes.reverse(forward_sde, score_p)
-    gen = trajectory_generator(reverse_sde, key, load_size, initial_val)
+    gen = trajectory_generator(reverse_sde, key, load_size, x0_sampler)
 
     return learn_score(
         forward_sde,
-        initial_val,
+        aux_dim,
         gen,
         key,
         ts,
@@ -116,7 +120,7 @@ def learn_p_star_score(
 
 def learn_score(
     sde: sdes.SDE,
-    x0,
+    aux_dim: int,
     generator: Callable,
     key: jax.Array,
     ts: jax.Array,
@@ -134,8 +138,6 @@ def learn_score(
     score_net = net(**net_params)
 
     _, network_key = jax.random.split(key)
-
-    aux_dim = x0.shape[-3]
 
     iter_dataset = get_iterable_dataset(
         generator=generator,
