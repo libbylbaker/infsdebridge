@@ -1,4 +1,5 @@
 import functools
+import time
 
 import jax
 import jax.numpy as jnp
@@ -13,13 +14,13 @@ from sdebridge.utils import score_fn
 
 # Using landmarks
 
-save_path = "/home/gefan/Projects/sdebridge/sdebridge/ckpts/bm/32_landmarks_inexact"
+save_path = "./ckpts/bm/32_landmarks_inexact"
 
 sde_config = {
     "T": 1.0,
     "Nt": 100,
     "dim": 2,
-    "N": 32,
+    "n_bases": 8,
     "sigma": 1.0,
 }
 
@@ -36,11 +37,11 @@ network = {
 }
 
 training = {
-    "batch_size": 100,
-    "load_size": 5000,
-    "num_epochs": 200,
+    "batch_size": 50,
+    "load_size": 50,
+    "num_epochs": 100,
     "learning_rate": 1e-2,
-    "warmup_steps": 1000,
+    "warmup_steps": 0,
 }
 
 key = jax.random.PRNGKey(2)
@@ -50,23 +51,27 @@ neural_net = ScoreUNet
 
 
 def sample_multiple_circles(key, num_circs, num_pts, min_radius=0.7, max_radius=1.0, centre=jnp.asarray([0.0, 0.0])):
-    radius = jax.random.uniform(key, shape=num_circs, minval=min_radius, maxval=max_radius)
+    radius = jax.random.uniform(key, shape=(num_circs,), minval=min_radius, maxval=max_radius)
     ellipse_fn = functools.partial(sample_ellipse, num_pts=num_pts, shifts=centre)
     circs = jax.vmap(ellipse_fn, [0, None])(radius)
     return circs
 
 
-target_sampler = functools.partial(sample_multiple_circles, num_pts=sde_config["N"])
-
+target_sampler = functools.partial(sample_multiple_circles, num_pts=sde_config["n_bases"])
+start_time = time.time()
 score_state_p = db.learn_p_score(
     bm_sde, target_sampler, train_key, aux_dim=1, **training, net=neural_net, network_params=network
 )
+end_time = time.time()
+
+train_time = end_time - start_time
 
 score_p_ckpt = {
     "state": score_state_p,
     "training_config": training,
     "network_config": network,
     "sde_config": sde_config,
+    "time": train_time,
 }
 
 orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
