@@ -17,11 +17,11 @@ from sdebridge.data_processing import sample_ellipse
 from sdebridge.networks.score_unet import ScoreUNet
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--n_bases", type=int, default=32)
+parser.add_argument("--n_bases", type=int, default=64)
 
 
 def run(n_bases):
-    save_path = f"./train_scripts/ckpts/bm/{n_bases}_fourier_exact"
+    save_path = f"./train_scripts/ckpts/bm/{n_bases}_landmarks_exact"
     sde_config = {
         "T": 1.0,
         "Nt": 100,
@@ -33,7 +33,7 @@ def run(n_bases):
     bm_sde = sdes.brownian_sde(**sde_config)
 
     network = {
-        "output_dim": 2 * bm_sde.dim * bm_sde.n_bases,
+        "output_dim": bm_sde.dim * bm_sde.n_bases,
         "time_embedding_dim": bm_sde.dim * bm_sde.n_bases * 4,
         "init_embedding_dim": bm_sde.dim * bm_sde.n_bases * 4,
         "act_fn": "silu",
@@ -55,7 +55,7 @@ def run(n_bases):
     training = {
         "batch_size": 50,
         "load_size": 2000,
-        "num_epochs": 200,
+        "num_epochs": 300,
         "learning_rate": 2e-3,
         "warmup_steps": 500,
     }
@@ -63,8 +63,8 @@ def run(n_bases):
     key = jax.random.PRNGKey(2)
 
     neural_net = ScoreUNet
-    target = sample_ellipse(100)
-    target = utils.fourier_coefficients(target, n_bases)
+    target = sample_ellipse(n_bases)
+    target = jnp.expand_dims(target, axis=0)
 
     def target_sampler(key, num_batches):
         initial_vals = jnp.tile(target, reps=(num_batches, 1, 1, 1))
@@ -73,7 +73,7 @@ def run(n_bases):
     train_key = jax.random.split(key, 2)[0]
     start_time = time.time()
     score_state_p = db.learn_p_score(
-        bm_sde, target_sampler, train_key, aux_dim=2, **training, net=neural_net, network_params=network
+        bm_sde, target_sampler, train_key, aux_dim=1, **training, net=neural_net, network_params=network
     )
     end_time = time.time()
     t = end_time - start_time
