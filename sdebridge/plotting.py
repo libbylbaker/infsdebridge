@@ -1,9 +1,11 @@
+import functools
+
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from matplotlib.collections import LineCollection
 from tueplots import axes, bundles, cycler, figsizes, fonts
 from tueplots.constants.color import palettes
-
-from .setup import *
 
 
 def set_style(nrows=1, ncols=1):
@@ -73,7 +75,7 @@ def plot_2d_vector_field(
     xm, ym = jnp.meshgrid(xs, xs)
     x = jnp.stack([xm.flatten(), ym.flatten()], axis=-1)
     fig, ax = plt.subplots(1, len(ts), figsize=(4 * len(ts), 4))
-    X_ref = partial(X_ref, **kwargs) if X_ref is not None else None
+    X_ref = functools.partial(X_ref, **kwargs) if X_ref is not None else None
     for i, t in enumerate(ts):
         vector_field = X(x, t) if X is not None else None
         vector_field_ref = X_ref(x, t) if X_ref is not None else None
@@ -130,7 +132,7 @@ def plot_trajectories(trajectories: jnp.ndarray, title: str, **kwargs):
 
 
 def plot_single_trajectory(trajectory: jnp.ndarray, title: str, **kwargs):
-    colormap = plt.cm.get_cmap("jet")
+    colormap = plt.colormaps.get_cmap("jet")
     assert len(trajectory.shape) == 2
     dim = trajectory.shape[-1]
     colors = [colormap(i) for i in jnp.linspace(0, 1, dim // 2)]
