@@ -30,9 +30,11 @@ Examples of how to use the package are provided in the `notebooks` directory.
 
 Please cite our article as follows
 
-@misc{baker2024conditioning,
+```bibtex
+@article{baker2024conditioning,
       title={Conditioning non-linear and infinite-dimensional diffusion processes},
       author={Elizabeth Louise Baker and Gefan Yang and Michael L. Severinsen and Christy Anna Hipsley and Stefan Sommer},
       year={2024},
       eprint={preprint arXiv:2402.01434},
 }
+```
