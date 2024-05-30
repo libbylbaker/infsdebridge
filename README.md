@@ -1,4 +1,4 @@
-# SDE Bridges
+# Infinite dimensional SDE Bridges
 
 We learn the score function for discretisations of infinite-dimensional stochastic differential equations.
 We use this to bridge the SDEs conditional on an end set.
