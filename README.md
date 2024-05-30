@@ -26,7 +26,7 @@ In order to define reverse bridges, we can either define a score function or lea
 
 Examples of how to use the package are provided in the `notebooks` directory.
 
-## Conditioning
+## Citation
 
 Please cite our article as follows
 
